@@ -175,6 +175,9 @@ decompiler work without any outside program; Deep mode uses them all, and Ghidra
 installed. It powers the desktop app (egui), the CLI and the MCP server, and parts of it run in
 the browser as WebAssembly. The full list is in [docs/tools.md](docs/tools.md).
 
+For this fork's website sign-in, permitted image export, and upstream-update process, see
+[Fork maintenance and authenticated capture](docs/fork-maintenance.md).
+
 ## Get started
 
 Requires Rust **1.97 or newer** (a dependency needs it; `rustup update`). On Debian or Ubuntu,
