@@ -263,6 +263,10 @@ impl AiHub {
         AiHub { engine, settings_path: Some(settings_path), keys }
     }
 
+    fn isolated(&self, config: craft_anything_engine::session::SessionConfig) -> Self {
+        AiHub { engine: self.engine.isolated(config), settings_path: self.settings_path.clone(), keys: self.keys.clone() }
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.settings_path.clone().unwrap_or_else(Settings::path)
     }

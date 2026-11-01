@@ -16,6 +16,7 @@ pub struct Field {
     pub required: bool,
     pub description: String,
     pub choices: Vec<String>,
+    pub bool_default: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub fn fields(schema: &Value) -> Vec<Field> {
                         required: required.contains(&name.as_str()),
                         description: v.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
                         choices,
+                        bool_default: v.get("default").and_then(Value::as_bool).unwrap_or(false),
                     }
                 })
                 .collect()
@@ -144,7 +146,7 @@ pub fn show(ui: &mut Ui, fields: &[Field], values: &mut BTreeMap<String, String>
             ui.vertical(|ui| {
                 match f.kind {
                     FieldKind::Bool => {
-                        let mut b = v == "true";
+                        let mut b = v.parse::<bool>().unwrap_or(f.bool_default);
                         if widgets::toggle(ui, &mut b, "").changed() {
                             *v = b.to_string();
                         }
@@ -196,6 +198,17 @@ pub fn show(ui: &mut Ui, fields: &[Field], values: &mut BTreeMap<String, String>
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn browser_form_displays_the_schema_default_and_can_send_explicit_false() {
+        let registry = craft_anything_engine::Registry::with_all_tools();
+        let spec = registry.get("web_site_open").unwrap();
+        let fields = fields(&registry.input_schema(spec));
+        let headless = fields.iter().find(|f| f.name == "headless").unwrap();
+        assert!(headless.bool_default, "the form must show headless on by default");
+        let values = BTreeMap::from([("url".into(), "https://example.test/".into()), ("headless".into(), "false".into())]);
+        assert_eq!(build(&fields, &values).unwrap()["headless"], false);
+    }
 
     fn schema() -> Value {
         json!({

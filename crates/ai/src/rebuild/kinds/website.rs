@@ -166,6 +166,9 @@ impl TargetKind for WebsiteKind {
 
     fn brief_sections(&self, cx: &BriefCx) -> Vec<String> {
         let mut out = Vec::new();
+        if cx.ws.manifest.website_export_images {
+            out.push("The person confirmed permission to reuse the original website images. capture/capture.json and each route's capture.json list exported_images: files under images/ beside that capture, with hashes and any images that could not be saved. Copy the saved files into app/ and reference those local copies, never protected or signed original URLs. Keep an image credit list in app/CREDITS.md. An image that could not be saved needs a placeholder or the person's help.".into());
+        }
         let routes = routes(cx.ws);
         if !routes.is_empty() {
             let list = routes.iter().map(|r| format!("{} (capture/routes/{}/)", r.path, r.slug)).collect::<Vec<_>>().join(", ");

@@ -61,6 +61,7 @@ const ACTIONS: &[Action] = &[
     a("pause",               "stop the running build",                         Tool(&["rebuild_stop"])),
     a("unsend",              "take back a note the builder hasn't read yet",   Tool(&["rebuild_note_withdraw"])),
     a("continue_build",      "carry on a build that stopped part-way",         Cli("rebuild <target> <request> --continue-in --resume")),
+    a("recapture_website",   "recapture a website and continue its existing app", Cli("rebuild <target> <request> --continue-in --recapture --sign-in --export-images")),
     a("open_preview",        "open the built website in the browser",          Tool(&["project_preview"])),
     a("play",                "play the built game or start the built app",     Tool(&["project_play"])),
     a("ask_about_build",     "a question about the build, answered without building", Tool(&["rebuild_question_ask"])),

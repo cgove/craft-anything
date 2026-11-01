@@ -140,6 +140,15 @@ impl Engine {
         &self.registry
     }
 
+    /// The same tools in a fresh session, with no shared targets, browsers or inbox.
+    pub fn isolated(&self, config: session::SessionConfig) -> std::sync::Arc<Engine> {
+        std::sync::Arc::new_cyclic(|me| {
+            let mut session = Session::from_configuration(config);
+            session.ext.insert(std::sync::Arc::new(EngineRef(me.clone())));
+            Engine { registry: self.registry.clone(), session: Mutex::new(session) }
+        })
+    }
+
     /// Lock the session (recovering from a poisoned lock rather than cascading a panic).
     #[track_caller]
     pub fn session(&self) -> MutexGuard<'_, Session> {
@@ -299,6 +308,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn isolated_engines_preserve_tools_and_configuration_but_share_no_runtime_state() {
+        let mut session = crate::testing::session();
+        session.deep_for_run = Some(false);
+        session.ext.insert(std::sync::Arc::new(String::from("parent-only")));
+        let parent = Engine::shared(session, Vec::new());
+        let config = parent.session().configuration();
+        let first = parent.isolated(config.clone());
+        let second = parent.isolated(config);
+        let first_dir = first.session().config_dir();
+        let parent_dir = parent.session().config_dir();
+        assert_eq!(first_dir, parent_dir);
+        assert!(first.session().clean_room());
+        assert!(first.session().ext.get::<String>().is_none());
+        first.session().ext.insert(std::sync::Arc::new(42usize));
+        assert!(second.session().ext.get::<usize>().is_none());
+        let own = first.session().ext.get::<EngineRef>().unwrap().0.upgrade().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&own, &first));
+        assert!(!std::sync::Arc::ptr_eq(&own, &parent));
+        assert_eq!(first.registry().all().len(), parent.registry().all().len());
+    }
+
+    #[test]
     fn unknown_tool_is_an_error_not_a_panic() {
         let e = Engine::new(crate::testing::session());
         let err = e.call("no_such_tool", Value::Null, CallOptions::new(Caller::Cli)).unwrap_err();
@@ -341,6 +372,7 @@ mod tests {
             run: whoami,
         };
         let e = Engine::shared(crate::testing::session(), vec![extra]);
+        let e = e.isolated(e.session().configuration());
         assert!(e.registry().get("core_target_triage").is_some(), "the engine's own tools are still there");
         let out = e.call("test_whoami", Value::Null, CallOptions::new(Caller::Cli)).unwrap().to_json();
         assert_eq!(out["result"]["engine"], true);

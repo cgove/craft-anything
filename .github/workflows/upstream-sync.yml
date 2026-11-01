@@ -1,0 +1,47 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    if: github.repository == 'cgove/craft-anything'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Propose upstream changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git fetch https://github.com/storytold/craft-anything.git main:refs/remotes/upstream/main
+          if git merge-base --is-ancestor refs/remotes/upstream/main HEAD; then
+            echo "The fork already contains upstream main."
+            exit 0
+          fi
+          # This branch is an upstream mirror. Ordinary fast-forward pushes preserve its history.
+          git push origin refs/remotes/upstream/main:refs/heads/sync/upstream-main
+          number=$(gh pr list --base main --head sync/upstream-main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            gh pr create --base main --head sync/upstream-main \
+              --title "Merge upstream updates" \
+              --body "Merge current storytold/craft-anything main into this fork. Use Create a merge commit, not squash or rebase, to preserve upstream ancestry. Review conflicts, the fork verification run, and authenticated capture behavior before merging. Local feature commits remain on main; no reset or automatic merge is performed."
+            number=$(gh pr list --base main --head sync/upstream-main --state open --json number --jq '.[0].number')
+          fi
+          # PRs made with GITHUB_TOKEN do not trigger pull_request workflows. Dispatch explicitly.
+          gh workflow run fork-verify.yml --ref main -f pull_request="$number"

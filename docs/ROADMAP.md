@@ -500,6 +500,18 @@ Owner: open · Status: in progress
 
 ### R2.3 Website coverage and a better visual metric
 Owner: open · Status: done
+- [x] Recapture an existing website after sign-in without resetting app files or builder history;
+      preserve the previous capture on cancellation/failure (app, CLI and MCP)
+- [x] Keep the signed-in capture browser available to the local Deep-mode CLI builder's MCP tools;
+      private temporary handoff, live identity checks, expired-connection refusal and a real
+      cross-process MCP regression fixture
+- [x] Keep the recapture action inside the project panel's wrapping row, including while disabled;
+      regression checks idle/running projects at two window widths
+- [x] Sign in in a private browser before capturing a website; isolate each build's browser and
+      inbox, honor boolean defaults in tool forms, and optionally export permitted original images
+      in Deep mode through the authenticated browser cache (bounded count/bytes, saved/skipped list)
+- [ ] Try the manual sign-in and Continue flow against a real website with MFA on Windows and macOS
+      (the workflow handoff, UI controls and a synthetic authenticated browser fixture are tested)
 - [x] Study: up to 4 same-site pages from the start page's links, each captured into
       `capture/routes/<page>/` (`capture/routes.json`); the brief asks for each at the same path
 - [x] Study: open menus, dialogs and tabs; record states (`web_page_states_capture`: up to 4 on the start

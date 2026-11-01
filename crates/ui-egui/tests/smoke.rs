@@ -58,6 +58,122 @@ fn first_run_walks_through_four_screens() {
 }
 
 #[test]
+fn website_login_and_permitted_image_export_are_visible_choices() {
+    let mut h = harness_sized(egui::vec2(1280.0, 1120.0), || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.state.make.url = "https://example.test/private".into();
+        app.state.make.editing_url = true;
+        app.state.make.request = "Recreate this website".into();
+        app
+    });
+    h.run_steps(3);
+    h.get_by_label("Sign in before capture").click();
+    h.run_steps(3);
+    assert!(h.state().state.make.website_sign_in);
+    assert!(h.query_by_label("Save original images (I own them or have permission to reuse them)").is_none());
+    h.get_by_label("Deep").click();
+    h.run_steps(3);
+    h.get_by_label("Save original images (I own them or have permission to reuse them)").click();
+    h.run_steps(3);
+    assert!(h.state().state.make.website_export_images);
+    h.get_by_label("Start");
+}
+
+#[test]
+fn an_existing_website_can_choose_recapture_without_resetting_the_project() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    use craft_anything_ui_egui::state::Modal;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Existing website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+    ws.manifest.agent_session = Some("fixture-session".into());
+    ws.save().unwrap();
+    std::fs::create_dir(ws.app_dir()).unwrap();
+    std::fs::write(ws.app_dir().join("index.html"), "existing app").unwrap();
+    std::fs::create_dir(ws.capture_dir()).unwrap();
+    std::fs::write(ws.capture_dir().join("capture.json"), "existing reference").unwrap();
+    let original = ws.clone();
+    let mut h = harness_sized(egui::vec2(1280.0, 1120.0), move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.open_workspace(ws);
+        app
+    });
+    h.run_steps(3);
+    h.get_by_label("Recapture original").click();
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { sign_in: true, .. })));
+    h.get_by_label("Recapture and continue");
+    h.get_by_label("Sign in before capture");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.state().state.modal.is_none());
+    assert_eq!(std::fs::read_to_string(original.app_dir().join("index.html")).unwrap(), "existing app");
+    assert_eq!(std::fs::read_to_string(original.capture_dir().join("capture.json")).unwrap(), "existing reference");
+    assert_eq!(Workspace::open(&original.root).unwrap().manifest.agent_session.as_deref(), Some("fixture-session"));
+    assert!(!h.state().runs.is_busy(&original.root));
+}
+
+#[test]
+fn a_ready_website_opens_recapture_with_a_pointer_press_and_release() {
+    use craft_anything_engine::workspace::{CheckResult, Status, TargetRef, Workspace};
+    use craft_anything_ui_egui::state::Modal;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+    ws.manifest.status = Status::Ready;
+    let mut check = CheckResult::new(CheckResult::WEB_VISUAL, 1, true, "fixture");
+    check.similarity = Some(96.0);
+    ws.manifest.checks.push(check);
+    let mut h = harness_sized(egui::vec2(1676.0, 1152.0), move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.open_workspace(ws);
+        app
+    });
+    h.run_steps(4);
+    let pos = h.get_by_label("Recapture original").rect().center();
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        h.step();
+    }
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { .. })));
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    h.get_by_label("Recapture original").click_accesskit();
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { .. })));
+}
+
+#[test]
+fn website_project_sidebar_actions_stay_inside_the_window_while_running() {
+    use craft_anything_ai::rebuild::StandIns;
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    for (width, running) in [(1676.0, true), (1676.0, false), (1280.0, true), (1280.0, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+        let runs = StandIns::new();
+        let folder = dir.path().to_path_buf();
+        let mut h = harness_sized(egui::vec2(width, 1152.0), move || {
+            let mut app = stand_in_app(folder, &runs);
+            app.open_workspace(ws);
+            if running {
+                app.continue_build();
+            }
+            app
+        });
+        h.run_steps(4);
+        let screen = h.ctx.content_rect();
+        for name in ["From", "Progress", "Open folder", "Recapture original", "Rename", "Duplicate"] {
+            let rect = h.get_by_label(name).rect();
+            assert!(
+                rect.left() >= screen.right() - 300.0 && rect.right() <= screen.right(),
+                "{name} is clipped: {rect:?}, window {screen:?}, running {running}"
+            );
+        }
+    }
+}
+
+#[test]
 fn simple_title_bar_keeps_only_the_essentials() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);

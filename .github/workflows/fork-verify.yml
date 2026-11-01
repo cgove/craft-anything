@@ -1,0 +1,68 @@
+name: Fork verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: "Optional upstream-sync PR number; test its merge with fork main"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'cgove/craft-anything'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - name: Validate PR input
+        env:
+          PR_NUMBER: ${{ inputs.pull_request }}
+        run: |
+          if [ -n "$PR_NUMBER" ] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "pull_request must be a PR number"
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.pull_request != '' && format('refs/pull/{0}/merge', inputs.pull_request) || github.ref }}
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+          rustup update stable --no-self-update
+          rustup target add wasm32-unknown-unknown --toolchain stable
+      - name: Check the merged code
+        run: cargo +stable xtask ci
+
+  authenticated-browser:
+    if: github.repository == 'cgove/craft-anything'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.pull_request != '' && format('refs/pull/{0}/merge', inputs.pull_request) || github.ref }}
+          persist-credentials: false
+      - name: Check authenticated capture and original image bytes
+        run: |
+          rustup update stable --no-self-update
+          cargo +stable test --locked -p craft-anything-engine authenticated_images_are_exported_through_the_private_browser -- --ignored --nocapture
+          cargo +stable test --locked -p craft-anything-cli --test browser_session -- --ignored --nocapture
+          cargo +stable test --locked -p craft-anything-ai existing_website_recapture_replaces_only_the_reference -- --ignored --nocapture

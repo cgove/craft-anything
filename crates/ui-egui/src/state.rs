@@ -46,6 +46,10 @@ pub struct MakeDraft {
     /// The builder may generate pictures and 3D models for this game (saved with the project).
     #[serde(default)]
     pub generate_assets: bool,
+    #[serde(default)]
+    pub website_sign_in: bool,
+    #[serde(default)]
+    pub website_export_images: bool,
     /// The person chose to build without Ghidra (Deep mode with the built-in decompiler) this time.
     #[serde(default)]
     pub skip_ghidra: bool,
@@ -84,6 +88,8 @@ impl Default for MakeDraft {
             found: None,
             builder: None,
             generate_assets: false,
+            website_sign_in: false,
+            website_export_images: false,
             skip_ghidra: false,
             look: false,
             folder: None,
@@ -353,6 +359,12 @@ pub enum Modal {
         icon: String,
     },
     Website,
+    /// Refresh an existing website's reference before continuing its build.
+    RecaptureWebsite {
+        project: PathBuf,
+        sign_in: bool,
+        export_images: bool,
+    },
     Tutorial(usize),
     About,
     /// Getting a game engine (Unity, Unreal, Godot, Rust), step by step.
