@@ -500,6 +500,8 @@ Owner: open · Status: in progress
 
 ### R2.3 Website coverage and a better visual metric
 Owner: open · Status: done
+- [ ] Sign in in a private browser before capturing a website; isolate each build's browser and
+      inbox, and honor boolean defaults in tool forms — claimed: Codex, branch feature/website-sign-in
 - [x] Study: up to 4 same-site pages from the start page's links, each captured into
       `capture/routes/<page>/` (`capture/routes.json`); the brief asks for each at the same path
 - [x] Study: open menus, dialogs and tabs; record states (`web_page_states_capture`: up to 4 on the start
