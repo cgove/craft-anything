@@ -80,6 +80,39 @@ fn website_login_and_permitted_image_export_are_visible_choices() {
 }
 
 #[test]
+fn an_existing_website_can_choose_recapture_without_resetting_the_project() {
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    use craft_anything_ui_egui::state::Modal;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Existing website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+    ws.manifest.agent_session = Some("fixture-session".into());
+    ws.save().unwrap();
+    std::fs::create_dir(ws.app_dir()).unwrap();
+    std::fs::write(ws.app_dir().join("index.html"), "existing app").unwrap();
+    std::fs::create_dir(ws.capture_dir()).unwrap();
+    std::fs::write(ws.capture_dir().join("capture.json"), "existing reference").unwrap();
+    let original = ws.clone();
+    let mut h = harness_sized(egui::vec2(1280.0, 1120.0), move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.open_workspace(ws);
+        app
+    });
+    h.run_steps(3);
+    h.get_by_label("Recapture original").click();
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { sign_in: true, .. })));
+    h.get_by_label("Recapture and continue");
+    h.get_by_label("Sign in before capture");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.state().state.modal.is_none());
+    assert_eq!(std::fs::read_to_string(original.app_dir().join("index.html")).unwrap(), "existing app");
+    assert_eq!(std::fs::read_to_string(original.capture_dir().join("capture.json")).unwrap(), "existing reference");
+    assert_eq!(Workspace::open(&original.root).unwrap().manifest.agent_session.as_deref(), Some("fixture-session"));
+    assert!(!h.state().runs.is_busy(&original.root));
+}
+
+#[test]
 fn simple_title_bar_keeps_only_the_essentials() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);

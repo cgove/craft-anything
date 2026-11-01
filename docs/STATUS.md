@@ -7,6 +7,8 @@ secret scan of all history clean).
 ## What works, and how it was checked
 
 Fork additions: website projects can wait for manual sign-in in a private browser before Study.
+Existing website projects also offer **Recapture original**, which refreshes their reference and
+continues the existing app and builder history. A failed or cancelled capture keeps the old reference.
 Each rebuild has its own engine, browser and inbox. Deep-mode projects can export permitted
 original images from the authenticated browser cache. Tool forms show boolean defaults correctly.
 See [fork-maintenance.md](fork-maintenance.md) for usage, limits, verification and upstream updates.

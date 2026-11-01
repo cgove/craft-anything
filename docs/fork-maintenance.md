@@ -89,3 +89,26 @@ craft-anything-cli --deep rebuild https://example.com/private "Recreate this web
 login card through `project_inbox_answer`. Sign-in cannot run unattended. Browser sessions are
 private to a build, expire when it ends, and must be signed in again if Study is retried. Closing
 the browser before continuing stops capture rather than starting a signed-out replacement.
+
+## Refresh a partially built project
+
+Open the website project and choose **Recapture original** beside **Open folder**. If it is
+building or queued, pause it first. Enable **Sign in before capture**, optionally choose permitted
+original-image export in Deep mode, then choose **Recapture and continue**. Sign in in the private
+browser and answer **I'm signed in, continue** in the project.
+
+The new reference is prepared separately. Only a successful capture replaces `capture/`;
+cancellation or a failed capture keeps the old reference. Existing `app/` files, builder session
+and API conversation history stay in place. The builder receives the refreshed reference and
+continues improving the existing app. It may change app files as part of that improvement.
+
+The CLI equivalent uses the existing project folder:
+
+```sh
+craft-anything-cli --deep rebuild - "Improve the existing app using the signed-in original" --continue-in /path/to/project --recapture --sign-in --export-images
+```
+
+Omitted sign-in and export flags keep the project's choices. Pass `--sign-in=false` or
+`--export-images=false` to turn either off. MCP uses `rebuild_start` with `project`, `recapture: true`
+and optional `website_sign_in` and `website_export_images` booleans. No recapture occurs during an
+ordinary Continue or follow-up.

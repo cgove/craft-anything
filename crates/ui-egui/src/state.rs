@@ -359,6 +359,12 @@ pub enum Modal {
         icon: String,
     },
     Website,
+    /// Refresh an existing website's reference before continuing its build.
+    RecaptureWebsite {
+        project: PathBuf,
+        sign_in: bool,
+        export_images: bool,
+    },
     Tutorial(usize),
     About,
     /// Getting a game engine (Unity, Unreal, Godot, Rust), step by step.

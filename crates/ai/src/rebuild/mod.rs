@@ -131,6 +131,8 @@ pub struct RunOptions {
     /// told to carry on rather than given the brief again. A run with no message on a project
     /// whose builder has already worked does the same, so "Try again" never starts over.
     pub continuing: bool,
+    /// Refresh an existing website's reference, then continue its existing app and builder session.
+    pub recapture: bool,
     /// Refinement rounds after the first build (each fixes what the last check found).
     pub max_rounds: u32,
     /// Stop refining once the build looks at least this alike (percent).
@@ -152,6 +154,7 @@ impl Default for RunOptions {
             message: None,
             shown: None,
             continuing: false,
+            recapture: false,
             max_rounds: 6,
             good_enough: 90.0,
             beginner: true,
@@ -194,6 +197,9 @@ impl RebuildRun {
     pub fn start(hub: &AiHub, ws: Workspace, opts: RunOptions) -> Result<RebuildRun, ToolError> {
         let config = opts.session_config.clone().unwrap_or_else(|| hub.engine.session().configuration());
         ws.manifest.validate_website_options(config.deep_for_run.unwrap_or(config.settings.deep_mode))?;
+        if opts.recapture && !matches!(ws.manifest.target, TargetRef::Website { .. }) {
+            return Err(ToolError::invalid("Recapture original is only available for website projects."));
+        }
         let hub = hub.isolated(config);
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
@@ -202,7 +208,7 @@ impl RebuildRun {
         let api = match entry.config.kind {
             BackendKind::AgentCli => None,
             _ => {
-                if opts.message.is_none() || !ws.capture_dir().exists() {
+                if !opts.recapture && (opts.message.is_none() || !ws.capture_dir().exists()) {
                     let _ = std::fs::remove_file(ws.transcript_path());
                 }
                 Some(hub.start_builder(&entry, opts.beginner, Some(ws.transcript_path()))?)
@@ -210,7 +216,7 @@ impl RebuildRun {
         };
         // A chosen extractor (an API backend, e.g. Kimi K3) takes a game's files out after a fresh
         // study; the run only uses it in Deep mode on a game (see Worker::extract).
-        let fresh = opts.message.is_none() || !ws.capture_dir().exists();
+        let fresh = !opts.recapture && (opts.message.is_none() || !ws.capture_dir().exists());
         let extractor = match hub.chosen(Role::Extractor).and_then(|n| hub.config().get(&n).cloned()) {
             Some(e) if fresh && e.config.kind != BackendKind::AgentCli => {
                 let _ = std::fs::remove_file(ws.root.join(EXTRACT_TRANSCRIPT));
@@ -607,9 +613,9 @@ impl Worker {
         self.self_check = Some((kind.clone(), opts.good_enough));
         let kind = kind.as_ref();
         self.editor = self.find_editor(&ws.manifest.stack)?;
-        let carrying_on = opts.continuing || (opts.message.is_none() && ws.builder_started());
-        let first = (opts.message.is_none() && !carrying_on) || !ws.capture_dir().exists();
-        if first {
+        let carrying_on = opts.continuing || opts.recapture || (opts.message.is_none() && ws.builder_started());
+        let first = !opts.recapture && ((opts.message.is_none() && !carrying_on) || !ws.capture_dir().exists());
+        if first || opts.recapture {
             self.study(ws, kind)?;
             if let Some((name, ex)) = extractor {
                 self.extract(ws, kind, &name, ex)?;
@@ -645,6 +651,11 @@ impl Worker {
                 if api_loop { format!("{API_BUILDER}\n\n{b}") } else { b }
             }
         };
+        if opts.recapture {
+            prompt = format!(
+                "The original website has been recaptured. Read the refreshed capture/README.md, capture.json, screenshots and any exported images; the earlier reference is obsolete. Continue improving the existing app/ files, keeping completed work and this conversation. Do not restart the project.\n\n{prompt}"
+            );
+        }
         // The extraction step left the original's files in app/Original/: the builder starts from them.
         if first && ws.app_dir().join(ORIGINALS_MANIFEST).is_file() {
             prompt.push_str(ORIGINALS_READY);
@@ -655,7 +666,7 @@ impl Worker {
         let must_decompile = !self.engine.session().clean_room() && matches!(ws.manifest.target, TargetRef::Local { .. });
         let mut reminded = false;
         // The builder finished and only the check didn't: the build is there to check.
-        let mut only_check = carrying_on && !first && opts.message.is_none() && ws.manifest.awaiting_check;
+        let mut only_check = !opts.recapture && carrying_on && !first && opts.message.is_none() && ws.manifest.awaiting_check;
         loop {
             if !std::mem::take(&mut only_check) {
                 let doing = match (round, carrying_on) {

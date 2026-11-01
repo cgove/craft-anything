@@ -500,8 +500,8 @@ Owner: open · Status: in progress
 
 ### R2.3 Website coverage and a better visual metric
 Owner: open · Status: done
-- [ ] Recapture an existing website after sign-in without resetting app files or builder history;
-      preserve the previous capture on cancellation/failure — claimed: Codex, branch feature/website-sign-in
+- [x] Recapture an existing website after sign-in without resetting app files or builder history;
+      preserve the previous capture on cancellation/failure (app, CLI and MCP)
 - [x] Sign in in a private browser before capturing a website; isolate each build's browser and
       inbox, honor boolean defaults in tool forms, and optionally export permitted original images
       in Deep mode through the authenticated browser cache (bounded count/bytes, saved/skipped list)

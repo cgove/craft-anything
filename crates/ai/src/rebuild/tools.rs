@@ -130,6 +130,9 @@ pub struct StartParams {
     /// stopped) instead of sending `request` as a follow-up.
     #[serde(default)]
     pub resume: bool,
+    /// With project: recapture the original website before continuing the existing app and history.
+    #[serde(default)]
+    pub recapture: bool,
     /// Where a new project's folder goes (default: the projects folder from settings).
     #[serde(default)]
     pub projects_dir: Option<PathBuf>,
@@ -149,12 +152,12 @@ pub struct StartParams {
     /// project_assets_allow.
     #[serde(default)]
     pub generate_assets: bool,
-    /// For a new website: wait for manual sign-in in a private browser before capture.
+    /// Wait for manual sign-in before capture. With project, requires recapture; omitted keeps its choice.
     #[serde(default)]
-    pub website_sign_in: bool,
-    /// For a new website in Deep mode: save original images you own or have permission to reuse.
+    pub website_sign_in: Option<bool>,
+    /// In Deep mode, save original images you may reuse. With project, requires recapture; omitted keeps its choice.
     #[serde(default)]
-    pub website_export_images: bool,
+    pub website_export_images: Option<bool>,
     /// The coding agent to use (a backend name), kept with a new project for its later changes;
     /// default: the one set up for building.
     #[serde(default)]
@@ -309,8 +312,8 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     let settings: &Settings = &ctx.session.settings;
     let (ws, message) = match &p.project {
         Some(dir) => {
-            if p.website_sign_in || p.website_export_images {
-                return Err(ToolError::invalid("Website options are for new projects; existing projects keep their choices."));
+            if !p.recapture && (p.website_sign_in.is_some() || p.website_export_images.is_some()) {
+                return Err(ToolError::invalid("Use recapture to change an existing website's capture options."));
             }
             if p.build_with.is_some() {
                 return Err(ToolError::invalid("build_with is for new projects; a project keeps the stack it was built with."));
@@ -318,8 +321,26 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
             if p.generate_assets {
                 return Err(ToolError::invalid("generate_assets is for new projects.").with_remediation("Use project_assets_allow for an existing project."));
             }
-            (open(dir)?, (!p.resume).then(|| p.request.clone()))
+            let mut ws = open(dir)?;
+            if p.recapture {
+                if runs.0.lock().unwrap_or_else(PoisonError::into_inner).is_busy(&ws.root) {
+                    return Err(ToolError::invalid("Pause the existing build before recapturing its original."));
+                }
+                ws.manifest.website_sign_in = p.website_sign_in.unwrap_or(ws.manifest.website_sign_in);
+                ws.manifest.website_export_images = p.website_export_images.unwrap_or(ws.manifest.website_export_images);
+                ws.manifest.validate_website_options(!ctx.session.clean_room())?;
+                if !matches!(ws.manifest.target, TargetRef::Website { .. }) {
+                    return Err(ToolError::invalid("Recapture original is only available for website projects."));
+                }
+                let (sign_in, images) = (ws.manifest.website_sign_in, ws.manifest.website_export_images);
+                ws.set_person(|m| {
+                    m.website_sign_in = sign_in;
+                    m.website_export_images = images;
+                })?;
+            }
+            (ws, (!p.resume).then(|| p.request.clone()))
         }
+        None if p.recapture => return Err(ToolError::invalid("Recapture requires an existing project folder.")),
         None if p.resume => return Err(ToolError::invalid("resume is for an existing project.").with_remediation("Pass its folder as `project`.")),
         None => {
             let target = p.target.as_deref().unwrap_or("-");
@@ -330,12 +351,12 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
                 (None, None) => project::Place::Projects,
             };
             let mut ws = project::new_project(settings, target, &p.request, place, p.build_with.as_deref(), p.generate_assets, p.backend.as_deref())?;
-            ws.manifest.website_sign_in = p.website_sign_in;
-            ws.manifest.website_export_images = p.website_export_images;
+            ws.manifest.website_sign_in = p.website_sign_in.unwrap_or(false);
+            ws.manifest.website_export_images = p.website_export_images.unwrap_or(false);
             ws.manifest.validate_website_options(!ctx.session.clean_room())?;
             ws.set_person(|m| {
-                m.website_sign_in = p.website_sign_in;
-                m.website_export_images = p.website_export_images;
+                m.website_sign_in = p.website_sign_in.unwrap_or(false);
+                m.website_export_images = p.website_export_images.unwrap_or(false);
             })?;
             if p.project_folder.is_some() {
                 ctx.session.remember_project(&ws.root)?;
@@ -359,6 +380,7 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         shown: message.clone(),
         message,
         continuing: p.resume,
+        recapture: p.recapture,
         max_rounds: p.rounds.unwrap_or(2),
         beginner: false,
         ..RunOptions::default()

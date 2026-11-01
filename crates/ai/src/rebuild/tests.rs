@@ -2,6 +2,83 @@ use super::check::build_check;
 use super::*;
 
 #[test]
+#[ignore = "requires installed Chromium; starts a private headless browser and loopback fixture"]
+fn existing_website_recapture_replaces_only_the_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original");
+    std::fs::create_dir(&original).unwrap();
+    std::fs::write(original.join("index.html"), "<!doctype html><h1>Updated fixture reference</h1>").unwrap();
+    let server = craft_anything_platform::serve::serve_dir(&original).unwrap();
+    let mut ws = Workspace::create(dir.path(), "Partially built website", "Improve this existing app", TargetRef::Website { url: server.url() }).unwrap();
+    ws.manifest.agent_session = Some("fixture-builder-session".into());
+    ws.save().unwrap();
+    std::fs::create_dir(ws.capture_dir()).unwrap();
+    std::fs::write(ws.capture_dir().join("capture.json"), "old reference").unwrap();
+    std::fs::create_dir(ws.app_dir()).unwrap();
+    std::fs::write(ws.app_dir().join("index.html"), b"partially built app").unwrap();
+    crate::context::save(&ws.transcript_path(), &[crate::model::Msg::user_text("Preserve this builder history")]).unwrap();
+    let history = std::fs::read(ws.transcript_path()).unwrap();
+    let mut worker = check_worker(&ws, false);
+    worker.engine.session().settings.build.web_widths = vec![800];
+    worker.engine.session().settings.build.max_pages = 0;
+    worker.study(&mut ws, kind("website").as_ref()).unwrap();
+    let captured: Value = serde_json::from_slice(&std::fs::read(ws.capture_dir().join("capture.json")).unwrap()).unwrap();
+    assert!(captured["text"].as_str().unwrap().contains("Updated fixture reference"));
+    assert!(ws.capture_dir().join("screenshot-800.png").is_file());
+    assert_eq!(std::fs::read(ws.app_dir().join("index.html")).unwrap(), b"partially built app");
+    assert_eq!(std::fs::read(ws.transcript_path()).unwrap(), history);
+    assert_eq!(Workspace::open(&ws.root).unwrap().manifest.agent_session.as_deref(), Some("fixture-builder-session"));
+    worker.call("web_site_close", json!({})).unwrap();
+}
+
+#[test]
+fn failed_recapture_preserves_api_history_app_and_previous_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = craft_anything_engine::testing::session();
+    // A test program rejects Chromium's arguments immediately; no browser or target is contacted.
+    session.settings.engines.tools.chromium = Some(std::env::current_exe().unwrap());
+    let hub = AiHub::with_stores(Arc::new(Engine::new(session)), dir.path().join("config.toml"), crate::KeyStore::file_only(dir.path().join("keys.toml")));
+    let mut config = hub.config();
+    config.upsert(crate::BackendEntry {
+        config: crate::BackendConfig {
+            name: "Fixture API".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "fixture".into(),
+            base_url: Some("http://127.0.0.1:9/v1".into()),
+            ssh_host: None,
+            enabled: true,
+        },
+        options: crate::BackendOptions::default(),
+    });
+    hub.engine.session().settings.ai = config.to_table().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Existing website", "Improve it", TargetRef::Website { url: "https://example.test/".into() }).unwrap();
+    ws.manifest.agent_session = Some("fixture-session".into());
+    ws.manifest.stack = "React + TypeScript (Vite)".into();
+    ws.set_person(|m| m.website_sign_in = true).unwrap();
+    ws.save().unwrap();
+    std::fs::create_dir(ws.capture_dir()).unwrap();
+    std::fs::write(ws.capture_dir().join("capture.json"), b"previous reference").unwrap();
+    std::fs::create_dir(ws.app_dir()).unwrap();
+    std::fs::write(ws.app_dir().join("index.html"), b"existing app").unwrap();
+    crate::context::save(&ws.transcript_path(), &[crate::model::Msg::user_text("Keep the existing app and its history")]).unwrap();
+    let transcript = std::fs::read(ws.transcript_path()).unwrap();
+    let run =
+        RebuildRun::start(&hub, ws.clone(), RunOptions { backend: Some("Fixture API".into()), recapture: true, continuing: true, ..RunOptions::default() })
+            .unwrap();
+    loop {
+        let event = run.rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        if let RunEvent::Finished { ok, .. } = event {
+            assert!(!ok);
+            break;
+        }
+    }
+    assert_eq!(std::fs::read(ws.transcript_path()).unwrap(), transcript);
+    assert_eq!(std::fs::read(ws.app_dir().join("index.html")).unwrap(), b"existing app");
+    assert_eq!(std::fs::read(ws.capture_dir().join("capture.json")).unwrap(), b"previous reference");
+    assert_eq!(Workspace::open(&ws.root).unwrap().manifest.agent_session.as_deref(), Some("fixture-session"));
+}
+
+#[test]
 fn website_sign_in_requires_explicit_continue_even_when_questions_are_automatic() {
     use craft_anything_engine::inbox::Answer;
     for choice in ["I'm signed in, continue", "Cancel", "unexpected"] {

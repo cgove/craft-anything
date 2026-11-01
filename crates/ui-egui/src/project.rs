@@ -213,6 +213,45 @@ impl CraftApp {
         self.start_run_with(ws, opts);
     }
 
+    fn recapture_website(&mut self, root: &Path, sign_in: bool, export_images: bool) -> bool {
+        if self.runs.is_busy(root) {
+            self.toast(tr("Pause the build before recapturing the original."), true);
+            return false;
+        }
+        let result = (|| {
+            let mut ws = Workspace::open(root)?;
+            ws.manifest.website_sign_in = sign_in;
+            ws.manifest.website_export_images = export_images;
+            ws.manifest.validate_website_options(self.settings.deep_mode)?;
+            if !matches!(ws.manifest.target, TargetRef::Website { .. }) {
+                return Err(craft_anything_engine::evidence::ToolError::invalid("Recapture original is only available for website projects."));
+            }
+            Ok(ws)
+        })();
+        let mut ws = match result {
+            Ok(ws) => ws,
+            Err(e) => {
+                self.toast(e.for_people(), true);
+                return false;
+            }
+        };
+        let Some(backend) = self.builder_backend(ws.manifest.builder.as_deref()) else {
+            self.need_builder(false);
+            return false;
+        };
+        if let Err(e) = ws.set_person(|m| {
+            m.website_sign_in = sign_in;
+            m.website_export_images = export_images;
+        }) {
+            self.toast(e.for_people(), true);
+            return false;
+        }
+        let message = tr("Improve this existing build using a fresh capture of the original website.");
+        let opts = RunOptions { recapture: true, continuing: true, ..self.run_options(Some(backend), Some(message.clone()), Some(message)) };
+        self.start_run_with(ws, opts);
+        true
+    }
+
     pub fn pause(&mut self) {
         let Some(root) = self.workspace.as_ref().map(|w| w.root.clone()) else { return };
         if self.runs.stop(&root) == Stopped::Unqueued {
@@ -712,6 +751,17 @@ fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
         if widgets::secondary(ui, Some("folder-open"), "Open folder").clicked() {
             open_folder(app, ws);
         }
+        if matches!(ws.manifest.target, TargetRef::Website { .. }) {
+            ui.add_enabled_ui(!app.running(), |ui| {
+                if widgets::secondary(ui, Some("refresh-cw"), "Recapture original").clicked() {
+                    app.state.modal = Some(Modal::RecaptureWebsite {
+                        project: ws.root.clone(),
+                        sign_in: true,
+                        export_images: app.settings.deep_mode && ws.manifest.website_export_images,
+                    });
+                }
+            });
+        }
         if matches!(outcome(app), Some(Outcome::Program))
             && widgets::secondary(ui, Some("pin"), "Pin this build").on_hover_text(tr("Keep this version in the sidebar to open any time.")).clicked()
         {
@@ -722,6 +772,32 @@ fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
             && widgets::secondary(ui, Some("microscope"), "Open in the workbench").on_hover_text(tr("The full toolset, evidence and logs.")).clicked()
         {
             app.state.screen = Screen::Workbench;
+        }
+    });
+}
+
+pub(crate) fn recapture_modal(app: &mut CraftApp, ui: &mut Ui, close: &mut bool) {
+    let Some(Modal::RecaptureWebsite { project, mut sign_in, mut export_images }) = app.state.modal.clone() else { return };
+    let t = Tokens::get(ui.ctx());
+    ui.label(theme::heading(tr("Recapture original"), theme::SECTION));
+    ui.add_space(8.0);
+    ui.label(tr("Refresh the original website, then continue improving this existing app. Your builder history is kept. If capture fails or you cancel, the previous reference stays."));
+    ui.add_space(12.0);
+    widgets::toggle(ui, &mut sign_in, &tr("Sign in before capture"));
+    if app.settings.deep_mode {
+        widgets::toggle(ui, &mut export_images, &tr("Save original images (I own them or have permission to reuse them)"));
+    } else {
+        export_images = false;
+        ui.label(RichText::new(tr("Choose Deep mode before recapturing to save permitted original image files.")).color(t.text_dim));
+    }
+    app.state.modal = Some(Modal::RecaptureWebsite { project: project.clone(), sign_in, export_images });
+    ui.add_space(16.0);
+    ui.horizontal(|ui| {
+        if widgets::primary(ui, "Recapture and continue").clicked() {
+            *close = app.recapture_website(&project, sign_in, export_images);
+        }
+        if widgets::secondary(ui, None, "Cancel").clicked() {
+            *close = true;
         }
     });
 }

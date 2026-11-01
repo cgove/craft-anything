@@ -3,39 +3,84 @@
 
 use super::*;
 
+/// Build a replacement beside the project's evidence. The live reference stays available until
+/// the complete study succeeds; failed captures never become the project's current reference.
+fn replace_capture(root: &Path, capture: impl FnOnce(&Path) -> Result<(), ToolError>) -> Result<(), ToolError> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let staging = root.join("investigation.cany").join(format!(
+        "capture-staging-{}-{}-{}",
+        std::process::id(),
+        craft_anything_engine::inbox::now_ms(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Some(parent) = staging.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ToolError::io(parent.display(), e))?;
+    }
+    std::fs::create_dir(&staging).map_err(|e| ToolError::io(staging.display(), e))?;
+    let next = staging.join("capture");
+    let previous = staging.join("previous");
+    let result = capture(&next).and_then(|()| {
+        if !next.join("capture.json").is_file() {
+            return Err(ToolError::invalid("The replacement capture is incomplete; the previous capture was kept."));
+        }
+        let current = root.join("capture");
+        let had_previous = current.exists();
+        if had_previous {
+            std::fs::rename(&current, &previous).map_err(|e| ToolError::io(current.display(), e))?;
+        }
+        if let Err(e) = std::fs::rename(&next, &current) {
+            if had_previous && let Err(restore) = std::fs::rename(&previous, &current) {
+                return Err(ToolError::io(current.display(), restore).with_remediation(format!(
+                    "The previous capture is safe in {}. Restore it to {} before trying again.",
+                    previous.display(),
+                    current.display()
+                )));
+            }
+            return Err(ToolError::io(current.display(), e));
+        }
+        Ok(())
+    });
+    // A failed rollback keeps its backup for recovery. Otherwise only temporary output remains.
+    if result.is_ok() || !previous.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
 impl Worker {
     pub(super) fn study(&mut self, ws: &mut Workspace, kind: &dyn TargetKind) -> Result<(), ToolError> {
         match ws.manifest.target.clone() {
             TargetRef::Website { url } => {
-                self.step(ws, Step::Study, Status::Inspecting, &format!("Opening {url} in a private browser…"))?;
-                self.call("web_site_open", json!({"url": url, "headless": !ws.manifest.website_sign_in}))?;
-                if ws.manifest.website_sign_in {
-                    self.wait_for_website_sign_in(ws, Duration::from_secs(10 * 60))?;
-                    self.call("web_site_open", json!({"url": url, "require_existing": true}))?;
-                }
-                self.step(ws, Step::Study, Status::Inspecting, "Photographing the page and reading its layout…")?;
-                let capture = ws.capture_dir();
-                if capture.exists() {
-                    let _ = std::fs::remove_dir_all(&capture);
-                }
-                // The widths the check compares at, so every picture has its pair.
-                let widths = self.engine.session().settings.build.widths();
-                self.call("web_site_capture", json!({"output_directory": capture.display().to_string(), "widths": widths, "noise_pass": true, "export_images": ws.manifest.website_export_images}))?;
-                // Menus, pop-ups and tabs, one at a time, on a computer and on a phone (where a menu
-                // button often replaces the navigation); a page without them (or a failure) is fine.
-                self.step(ws, Step::Study, Status::Inspecting, "Opening its menus, pop-ups and tabs…")?;
-                let mut views = vec![(kinds::website::STATES_DIR.to_string(), widths.first().copied().unwrap_or(1440))];
-                views.extend(kinds::website::phone_width(&widths).map(|w| (kinds::website::phone_states_dir(w), w)));
-                for (dir, width) in views {
-                    let states = capture.join(dir);
-                    if let Err(e) = self.call("web_page_states_capture", json!({"output_directory": states.display().to_string(), "width": width})) {
-                        self.step(ws, Step::Study, Status::Inspecting, &format!("Couldn't open its menus and pop-ups at {width} px: {}", e.message))?;
+                let root = ws.root.clone();
+                replace_capture(&root, |capture| {
+                    self.step(ws, Step::Study, Status::Inspecting, &format!("Opening {url} in a private browser…"))?;
+                    self.call("web_site_open", json!({"url": url, "headless": !ws.manifest.website_sign_in}))?;
+                    if ws.manifest.website_sign_in {
+                        self.wait_for_website_sign_in(ws, Duration::from_secs(10 * 60))?;
+                        self.call("web_site_open", json!({"url": url, "require_existing": true}))?;
                     }
-                }
-                self.capture_routes(ws, &url, &widths)?;
-                if !self.engine.session().clean_room() {
-                    self.how_it_works(ws, &url)?;
-                }
+                    self.step(ws, Step::Study, Status::Inspecting, "Photographing the page and reading its layout…")?;
+                    // The widths the check compares at, so every picture has its pair.
+                    let widths = self.engine.session().settings.build.widths();
+                    self.call("web_site_capture", json!({"output_directory": capture.display().to_string(), "widths": widths, "noise_pass": true, "export_images": ws.manifest.website_export_images}))?;
+                    // Menus, pop-ups and tabs, one at a time, on a computer and on a phone (where a menu
+                    // button often replaces the navigation); a page without them (or a failure) is fine.
+                    self.step(ws, Step::Study, Status::Inspecting, "Opening its menus, pop-ups and tabs…")?;
+                    let mut views = vec![(kinds::website::STATES_DIR.to_string(), widths.first().copied().unwrap_or(1440))];
+                    views.extend(kinds::website::phone_width(&widths).map(|w| (kinds::website::phone_states_dir(w), w)));
+                    for (dir, width) in views {
+                        let states = capture.join(dir);
+                        if let Err(e) = self.call("web_page_states_capture", json!({"output_directory": states.display().to_string(), "width": width})) {
+                            self.step(ws, Step::Study, Status::Inspecting, &format!("Couldn't open its menus and pop-ups at {width} px: {}", e.message))?;
+                        }
+                    }
+                    self.capture_routes(ws, &url, &widths, capture)?;
+                    if !self.engine.session().clean_room() {
+                        self.how_it_works(ws, &url, capture)?;
+                    }
+                    self.stop.check()?;
+                    Ok(())
+                })?;
             }
             TargetRef::Local { path } if self.engine.session().clean_room() => self.study_from_outside(ws, &path)?,
             TargetRef::Local { path } => {
@@ -147,7 +192,7 @@ impl Worker {
     /// Deep mode: how the site works, not only how it looks, into capture/how-it-works.md: what its
     /// JavaScript is made of (with readable sources where its maps allow) and ten seconds of what the
     /// start page does (requests, console, WebSocket messages). A part that fails is said, not fatal.
-    fn how_it_works(&mut self, ws: &mut Workspace, url: &str) -> Result<(), ToolError> {
+    fn how_it_works(&mut self, ws: &mut Workspace, url: &str, capture: &Path) -> Result<(), ToolError> {
         self.step(ws, Step::Study, Status::Inspecting, "Reading its JavaScript and watching what it does…")?;
         // The routes left the browser on another page; these look at the start page.
         let _ = self.call("web_site_open", json!({"url": url}));
@@ -163,7 +208,7 @@ impl Worker {
                 Err(e) => format!("{tool} didn't work: {}\n", e.message),
             });
         }
-        craft_anything_engine::project::write_atomic(&ws.capture_dir().join(HOW_IT_WORKS), notes.as_bytes())
+        craft_anything_engine::project::write_atomic(&capture.join(HOW_IT_WORKS), notes.as_bytes())
     }
 
     /// Clean room: nothing inside the original is read (no files, folder or code). When Settings
@@ -208,18 +253,17 @@ impl Worker {
     /// page, then links from those pages while there's room), each captured into
     /// capture/routes/<name>/ and listed in capture/routes.json. A page that can't be captured is
     /// left out; it never stops the study.
-    fn capture_routes(&mut self, ws: &mut Workspace, start: &str, widths: &[u32]) -> Result<(), ToolError> {
-        let capture = ws.capture_dir();
+    fn capture_routes(&mut self, ws: &mut Workspace, start: &str, widths: &[u32], capture: &Path) -> Result<(), ToolError> {
         let read = |dir: &Path| std::fs::read(dir.join("capture.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-        let found = read(&capture).unwrap_or(Value::Null);
+        let found = read(capture).unwrap_or(Value::Null);
         let max = self.engine.session().settings.build.max_pages.min(kinds::website::MAX_ROUTES);
         let picked = kinds::website::pick_routes(&found, start, max);
-        let mut kept = self.capture_pages(ws, &picked, widths)?;
+        let mut kept = self.capture_pages(ws, &picked, widths, capture)?;
         // One level deeper: pages linked from the ones just captured, while there's room.
         if kept.len() < max && !kept.is_empty() {
             let captures: Vec<Value> = kept.iter().filter_map(|r| read(&capture.join("routes").join(&r.slug))).collect();
             let deeper = kinds::website::pick_deeper_routes(&captures, start, &kept, max - kept.len());
-            kept.extend(self.capture_pages(ws, &deeper, widths)?);
+            kept.extend(self.capture_pages(ws, &deeper, widths, capture)?);
         }
         if !kept.is_empty() {
             let json = serde_json::to_vec_pretty(&kept).map_err(|e| ToolError::internal(e.to_string()))?;
@@ -229,8 +273,13 @@ impl Worker {
     }
 
     /// Capture each page into capture/routes/<slug>/; returns the ones that worked.
-    fn capture_pages(&mut self, ws: &mut Workspace, picked: &[kinds::website::Route], widths: &[u32]) -> Result<Vec<kinds::website::Route>, ToolError> {
-        let capture = ws.capture_dir();
+    fn capture_pages(
+        &mut self,
+        ws: &mut Workspace,
+        picked: &[kinds::website::Route],
+        widths: &[u32],
+        capture: &Path,
+    ) -> Result<Vec<kinds::website::Route>, ToolError> {
         let mut kept = Vec::new();
         if !picked.is_empty() {
             // web_site_capture creates its own folder, inside one that exists.
@@ -299,5 +348,41 @@ pub(super) fn describe(out: &ToolOutput) -> String {
             format!("{}\n\nEvidence {}.\n\n```json\n{}\n```\n", e.summary, e.id, body.chars().take(20_000).collect::<String>())
         }
         ToolOutput::Value(v) => format!("```json\n{}\n```\n", serde_json::to_string_pretty(v).unwrap_or_default().chars().take(20_000).collect::<String>()),
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn replacement_preserves_existing_work_and_commits_only_after_success() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("capture")).unwrap();
+        std::fs::write(root.path().join("capture/capture.json"), b"old reference").unwrap();
+        std::fs::create_dir(root.path().join("app")).unwrap();
+        std::fs::write(root.path().join("app/index.html"), b"partially built app").unwrap();
+        std::fs::write(root.path().join("transcript.json"), b"builder history").unwrap();
+        for outcome in [ErrorCode::Cancelled, ErrorCode::ProgramFailed] {
+            let error = replace_capture(root.path(), |next| {
+                std::fs::create_dir(next).unwrap();
+                std::fs::write(next.join("partial.png"), b"partial output").unwrap();
+                Err(ToolError::new(outcome, "fixture stopped"))
+            })
+            .unwrap_err();
+            assert_eq!(error.code, outcome);
+            assert_eq!(std::fs::read(root.path().join("capture/capture.json")).unwrap(), b"old reference");
+        }
+        replace_capture(root.path(), |next| {
+            assert_eq!(std::fs::read(root.path().join("capture/capture.json")).unwrap(), b"old reference");
+            std::fs::create_dir(next).unwrap();
+            std::fs::write(next.join("capture.json"), b"new authenticated reference").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(root.path().join("capture/capture.json")).unwrap(), b"new authenticated reference");
+        assert_eq!(std::fs::read(root.path().join("app/index.html")).unwrap(), b"partially built app");
+        assert_eq!(std::fs::read(root.path().join("transcript.json")).unwrap(), b"builder history");
+        assert!(std::fs::read_dir(root.path().join("investigation.cany")).unwrap().next().is_none());
     }
 }
