@@ -502,6 +502,8 @@ Owner: open · Status: in progress
 Owner: open · Status: done
 - [x] Recapture an existing website after sign-in without resetting app files or builder history;
       preserve the previous capture on cancellation/failure (app, CLI and MCP)
+- [ ] Keep the signed-in capture browser available to the local CLI builder's MCP tools
+      (claimed: Codex, branch feature/website-sign-in)
 - [x] Keep the recapture action inside the project panel's wrapping row, including while disabled;
       regression checks idle/running projects at two window widths
 - [x] Sign in in a private browser before capturing a website; isolate each build's browser and
