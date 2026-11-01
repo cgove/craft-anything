@@ -38,13 +38,19 @@ Upstream downloads do not contain this fork's changes. Build the fork's main or 
 cargo build --locked --release -p craft-anything -p craft-anything-cli
 ```
 
-For a macOS app bundle and disk image, the existing packaging script supports an unsigned build:
+For a macOS fork app alongside the official app:
 
 ```sh
-bash packaging/macos/package.sh --arch arm64
+bash packaging/macos/package-fork.sh --arch aarch64
 ```
 
 Use `--arch x86_64` for Intel, or `--arch universal` for both. Unsigned builds are not notarized.
+The wrapper reuses upstream app-only packaging, bundles the CLI, and ad-hoc signs **Craft Anything Fork**
+with bundle identifier `ai.cgove.craft-anything`. Install that app from `dist/release/` into
+`/Applications/`. The official **Craft Anything** can stay installed; its updates do not replace
+the fork app. Both apps use the existing Craft Anything settings and project locations.
+The app-only path does not create or mount a disk image. Use `--skip-build` to repackage binaries
+already built for the chosen architecture.
 Upstream's Apple and Windows signing credentials do not transfer to a fork. Keep publication a
 separate deliberate step after validation. Scheduled upstream checks do not update an installed app.
 

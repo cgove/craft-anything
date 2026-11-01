@@ -19,10 +19,12 @@ HERE="$ROOT/packaging/macos"
 
 ARCH=universal
 SKIP_BUILD=0
+APP_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --app-only) APP_ONLY=1; shift ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -128,6 +130,11 @@ if [ "$NOTARIZE" = 1 ]; then
   retry xcrun stapler staple "$APP"
   retry xcrun stapler validate "$APP"
   spctl --assess --type execute -vvv "$APP"
+fi
+
+if [ "$APP_ONLY" = 1 ]; then
+  echo "App bundle: $APP"
+  exit 0
 fi
 
 # ---- DMG ---------------------------------------------------------------------------------------
