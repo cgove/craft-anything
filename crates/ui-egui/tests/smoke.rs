@@ -113,6 +113,38 @@ fn an_existing_website_can_choose_recapture_without_resetting_the_project() {
 }
 
 #[test]
+fn a_ready_website_opens_recapture_with_a_pointer_press_and_release() {
+    use craft_anything_engine::workspace::{CheckResult, Status, TargetRef, Workspace};
+    use craft_anything_ui_egui::state::Modal;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+    ws.manifest.status = Status::Ready;
+    let mut check = CheckResult::new(CheckResult::WEB_VISUAL, 1, true, "fixture");
+    check.similarity = Some(96.0);
+    ws.manifest.checks.push(check);
+    let mut h = harness_sized(egui::vec2(1676.0, 1152.0), move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.open_workspace(ws);
+        app
+    });
+    h.run_steps(4);
+    let pos = h.get_by_label("Recapture original").rect().center();
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        h.step();
+    }
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { .. })));
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    h.get_by_label("Recapture original").click_accesskit();
+    h.run_steps(3);
+    assert!(matches!(h.state().state.modal, Some(Modal::RecaptureWebsite { .. })));
+}
+
+#[test]
 fn website_project_sidebar_actions_stay_inside_the_window_while_running() {
     use craft_anything_ai::rebuild::StandIns;
     use craft_anything_engine::workspace::{TargetRef, Workspace};
