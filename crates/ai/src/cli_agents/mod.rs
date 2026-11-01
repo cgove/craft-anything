@@ -287,6 +287,8 @@ pub struct Builder {
     pub investigation: Option<PathBuf>,
     /// Where questions and approvals for the person go.
     pub inbox: PathBuf,
+    /// A private, temporary connection file for this run's capture browser. Local Deep runs only.
+    pub browser_session: Option<PathBuf>,
 }
 
 /// Our MCP server for `spec`, in the run's mode whatever the saved settings say; a builder's lists
@@ -299,6 +301,9 @@ fn mcp_for(spec: &CliSpec, remote: bool) -> McpCommand {
     mcp.args.push(if spec.deep { "--deep" } else { "--clean-room" }.into());
     if spec.deep && spec.builder.is_some() {
         mcp.args.push("--all-tools".into());
+        if !remote && let Some(path) = spec.builder.as_ref().and_then(|b| b.browser_session.as_ref()) {
+            mcp.args.extend(["--browser-session".into(), path.display().to_string()]);
+        }
     }
     mcp
 }
@@ -876,7 +881,7 @@ mod tests {
         assert!(!["Read", "Glob", "Grep"].iter().any(|t| allowed.contains(&t.to_string())), "every read goes through the approval tool: {allowed:?}");
         let spec = |deep, builder: bool| CliSpec {
             deep,
-            builder: builder.then(|| Builder { investigation: None, inbox: PathBuf::from("/p/inbox") }),
+            builder: builder.then(|| Builder { investigation: None, inbox: PathBuf::from("/p/inbox"), browser_session: None }),
             ..CliSpec::new(
                 BackendConfig {
                     name: "Claude".into(),
@@ -896,6 +901,12 @@ mod tests {
         assert!(!args(false, true).contains(&"--all-tools".to_string()) && args(false, true).contains(&"--clean-room".to_string()));
         // A chat's server runs in the chat's mode too, whatever was saved.
         assert!(args(true, false).contains(&"--deep".to_string()) && !args(true, false).contains(&"--all-tools".to_string()));
+        let mut browser = spec(true, true);
+        browser.builder.as_mut().unwrap().browser_session = Some("/private/run/connection.json".into());
+        assert!(mcp_for(&browser, false).args.windows(2).any(|w| w == ["--browser-session", "/private/run/connection.json"]));
+        assert!(!mcp_for(&browser, true).args.contains(&"--browser-session".to_string()), "a remote builder cannot use a local browser");
+        browser.deep = false;
+        assert!(!mcp_for(&browser, false).args.contains(&"--browser-session".to_string()), "Clean room must not receive the capture browser");
         assert!(args(false, false).contains(&"--clean-room".to_string()));
     }
 

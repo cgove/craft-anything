@@ -56,6 +56,16 @@ pub struct Browser {
     _profile: Option<std::path::PathBuf>,
 }
 
+impl Drop for Browser {
+    fn drop(&mut self) {
+        // Stop the owned process before deleting its profile. Attached handles own neither.
+        drop(self._proc.take());
+        if let Some(profile) = self._profile.take() {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+    }
+}
+
 /// What is answering on a CDP endpoint: `electron`, `edge`, `chrome`, or `unknown`, from the
 /// `/json/version` product and user agent (Electron and Edge both name themselves there).
 pub fn runtime_of(product: &str, user_agent: &str) -> &'static str {
@@ -108,9 +118,10 @@ impl Browser {
             });
         }
         // A website opened with web_site_open is the page every browser tool looks at by default.
-        if let Some(site) = ctx.session.ext.get::<super::website_tools::SiteBrowser>()
-            && cdp::json_version(&site.endpoint, dl).is_ok()
-        {
+        if let Some(site) = ctx.session.ext.get::<super::website_tools::SiteBrowser>() {
+            if !site.is_live(dl) {
+                return Err(ToolError::new(ErrorCode::NotFound, "The capture browser was closed; recapture the website and sign in again."));
+            }
             return Ok(Browser::attached(&site.endpoint, &site.product, &site.version));
         }
         if !opts.allow_launch {

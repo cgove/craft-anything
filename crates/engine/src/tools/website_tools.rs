@@ -16,9 +16,10 @@ use craft_anything_engines::cdp::{self, CdpClient, CdpEvent, Deadline, Endpoint,
 use craft_anything_evidence::{Authority, Confidence, Coverage, ErrorCode, EvidenceBuilder, Limitation, Location, Subject, ToolError, sha256_hex};
 use craft_anything_platform::sync::Mutex;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -81,13 +82,115 @@ pub struct SiteBrowser {
     /// What went wrong while the last page opened ([`page_health`]); web_site_capture records it.
     pub health: Mutex<Value>,
     _owner: Mutex<Browser>,
+    handoff: BrowserHandoff,
 }
 
 impl SiteBrowser {
+    /// Only the path crosses the agent's command line. The connection capability stays in a
+    /// private temporary file, outside the workspace and evidence, until the owning run ends.
+    pub fn handoff_path(&self) -> PathBuf {
+        self.handoff.path.clone()
+    }
+
+    /// Join the capture browser from a local MCP process without taking ownership of it.
+    pub fn attach(session: &mut crate::Session, path: &Path) -> Result<(), ToolError> {
+        if session.clean_room() {
+            return Err(ToolError::invalid("Sharing the capture browser requires Deep mode."));
+        }
+        let file = std::fs::File::open(path).map_err(|_| browser_handoff_error())?;
+        let metadata = file.metadata().map_err(|_| browser_handoff_error())?;
+        if !metadata.is_file() || metadata.len() > 16_384 {
+            return Err(browser_handoff_error());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(browser_handoff_error());
+            }
+        }
+        let mut bytes = Vec::new();
+        file.take(16_385).read_to_end(&mut bytes).map_err(|_| browser_handoff_error())?;
+        let connection: BrowserConnection = serde_json::from_slice(&bytes).map_err(|_| browser_handoff_error())?;
+        if bytes.len() > 16_384 || connection.version != 1 || connection.identity.is_empty() {
+            return Err(browser_handoff_error());
+        }
+        let endpoint = cdp::parse_endpoint(&connection.endpoint).map_err(|_| browser_handoff_error())?;
+        let dl = Deadline::new(Duration::from_secs(5), Default::default());
+        let info = cdp::json_version(&endpoint, &dl).map_err(|_| browser_handoff_error())?;
+        if info["webSocketDebuggerUrl"].as_str() != Some(connection.identity.as_str()) {
+            return Err(browser_handoff_error());
+        }
+        let product = info["Browser"].as_str().unwrap_or("unknown").to_string();
+        let version = info["Protocol-Version"].as_str().unwrap_or_default().to_string();
+        session.ext.insert(Arc::new(Self {
+            _owner: Mutex::new(Browser::attached(&endpoint, &product, &version)),
+            endpoint,
+            product,
+            version,
+            url: Mutex::new(String::new()),
+            health: Mutex::new(Value::Null),
+            handoff: BrowserHandoff { path: path.into(), owned_directory: None, identity: connection.identity },
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn is_live(&self, dl: &Deadline) -> bool {
+        self.handoff.path.is_file()
+            && cdp::json_version(&self.endpoint, dl).is_ok_and(|info| info["webSocketDebuggerUrl"].as_str() == Some(self.handoff.identity.as_str()))
+    }
+
     /// A non-owning handle for the shared browser helpers.
     fn handle(&self) -> Browser {
         Browser::attached(&self.endpoint, &self.product, &self.version)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserConnection {
+    version: u32,
+    endpoint: String,
+    identity: String,
+}
+
+struct BrowserHandoff {
+    path: PathBuf,
+    owned_directory: Option<PathBuf>,
+    identity: String,
+}
+
+impl BrowserHandoff {
+    fn create(browser: &Browser, dl: &Deadline) -> Result<Self, ToolError> {
+        let info = cdp::json_version(&browser.endpoint, dl)?;
+        let identity = info["webSocketDebuggerUrl"].as_str().filter(|s| !s.is_empty()).ok_or_else(browser_handoff_error)?.to_string();
+        let directory = super::artifact_tools::fresh_temp_dir("craft-browser-handoff")?;
+        let handoff = Self { path: directory.join("connection.json"), owned_directory: Some(directory), identity };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let connection = BrowserConnection { version: 1, endpoint: browser.endpoint.origin.clone(), identity: handoff.identity.clone() };
+        let bytes = serde_json::to_vec(&connection).map_err(|_| browser_handoff_error())?;
+        options.open(&handoff.path).and_then(|mut f| f.write_all(&bytes)).map_err(|_| browser_handoff_error())?;
+        Ok(handoff)
+    }
+}
+
+impl Drop for BrowserHandoff {
+    fn drop(&mut self) {
+        if let Some(directory) = &self.owned_directory {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+}
+
+fn browser_handoff_error() -> ToolError {
+    ToolError::new(ErrorCode::NotFound, "The signed-in capture browser is no longer available.")
+        .with_remediation("Recapture the website and sign in again. Leave its private browser open while building.")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -155,7 +258,7 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         return Err(ToolError::invalid("width must be 320..=3840 and height 320..=4000"));
     }
     let dl = deadline(ctx, p.timeout_secs)?;
-    let site = match live_site(ctx, &dl) {
+    let site = match live_site(ctx, &dl)? {
         Some(s) => s,
         None => {
             if p.require_existing {
@@ -165,6 +268,7 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
             ctx.report(None, "Starting a private browser…");
             let opts = LaunchOptions { allow_launch: true, headless: p.headless, no_sandbox: false, startup_secs: 30 };
             let b = Browser::launch(ctx, &opts, &dl)?;
+            let handoff = BrowserHandoff::create(&b, &dl)?;
             let site = Arc::new(SiteBrowser {
                 endpoint: b.endpoint.clone(),
                 product: b.product.clone(),
@@ -172,6 +276,7 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
                 url: Mutex::new(String::new()),
                 health: Mutex::new(Value::Null),
                 _owner: Mutex::new(b),
+                handoff,
             });
             ctx.session.ext.insert(site.clone());
             site
@@ -225,13 +330,12 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
 }
 
 /// The session's website browser when it is still answering; a dead one is dropped.
-fn live_site(ctx: &mut Ctx<'_>, dl: &Deadline) -> Option<Arc<SiteBrowser>> {
-    let site = ctx.session.ext.get::<SiteBrowser>()?;
-    if cdp::json_version(&site.endpoint, dl).is_ok() {
-        return Some(site);
+fn live_site(ctx: &Ctx<'_>, dl: &Deadline) -> Result<Option<Arc<SiteBrowser>>, ToolError> {
+    let Some(site) = ctx.session.ext.get::<SiteBrowser>() else { return Ok(None) };
+    if site.is_live(dl) {
+        return Ok(Some(site));
     }
-    ctx.session.ext.remove::<SiteBrowser>();
-    None
+    Err(browser_handoff_error())
 }
 
 fn page_client(site: &SiteBrowser, dl: &Deadline) -> Result<CdpClient, ToolError> {
@@ -462,7 +566,7 @@ fn web_page_states_capture(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutpu
     }
     let dl = deadline(ctx, p.timeout_secs.max(30))?;
     let site =
-        live_site(ctx, &dl).ok_or_else(|| ToolError::new(ErrorCode::NotFound, "no website is open").with_remediation("Open one first with web_site_open."))?;
+        live_site(ctx, &dl)?.ok_or_else(|| ToolError::new(ErrorCode::NotFound, "no website is open").with_remediation("Open one first with web_site_open."))?;
     let out = create_absent_dir(&p.output_directory)?;
     let mut client = page_client(&site, &dl)?;
     let r = (|| -> Result<(String, Vec<Value>, usize), ToolError> {
@@ -754,7 +858,7 @@ fn web_site_capture(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
     p.include_html &= !visitor;
     let dl = deadline(ctx, p.timeout_secs.max(30))?;
     let site =
-        live_site(ctx, &dl).ok_or_else(|| ToolError::new(ErrorCode::NotFound, "no website is open").with_remediation("Open one first with web_site_open."))?;
+        live_site(ctx, &dl)?.ok_or_else(|| ToolError::new(ErrorCode::NotFound, "no website is open").with_remediation("Open one first with web_site_open."))?;
     let out = create_absent_dir(&p.output_directory)?;
     let mut client = page_client(&site, &dl)?;
     let r = capture_into(ctx, &mut client, &out, &p, &dl);
@@ -1253,7 +1357,45 @@ mod tests {
         assert_eq!(exported, fixture, "original protected image bytes, not a screenshot");
         assert!(!after["exported_images"].to_string().contains("?version="));
         assert!(!after.to_string().contains("craft-fixture"));
+        // A CLI builder has its own engine, just like `craft-anything-cli mcp`.
+        let builder = crate::Engine::new(crate::testing::session());
+        let handoff = engine.session().ext.get::<SiteBrowser>().unwrap().handoff_path();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&handoff).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        SiteBrowser::attach(&mut builder.session(), &handoff).unwrap();
+        builder
+            .call(
+                "web_site_open",
+                json!({"url": address, "require_existing": true, "settle_ms": 100}),
+                crate::CallOptions::new(crate::Caller::Cli).with_consent(crate::Consent::Granted),
+            )
+            .expect("the builder must keep the signed-in capture browser");
+        builder
+            .call(
+                "web_site_capture",
+                json!({"output_directory": root.path().join("builder"), "widths": [800], "include_html": false, "export_images": true}),
+                crate::CallOptions::new(crate::Caller::Cli).with_consent(crate::Consent::Granted),
+            )
+            .unwrap();
+        let result: Value = serde_json::from_slice(&std::fs::read(root.path().join("builder/capture.json")).unwrap()).unwrap();
+        assert!(result["text"].as_str().unwrap().contains("Private fixture"));
+        let file = result["exported_images"]["files"][0]["file"].as_str().unwrap();
+        assert_eq!(std::fs::read(root.path().join("builder").join(file)).unwrap(), fixture);
+        let mut clean_room = crate::testing::session();
+        clean_room.deep_for_run = Some(false);
+        assert!(SiteBrowser::attach(&mut clean_room, &handoff).is_err());
         call("web_site_close", json!({}));
+        assert!(!handoff.exists(), "the run's connection capability must be deleted");
+        assert!(SiteBrowser::attach(&mut crate::testing::session(), &handoff).is_err());
+        let closed = builder.call(
+            "web_site_open",
+            json!({"url": address, "settle_ms": 100}),
+            crate::CallOptions::new(crate::Caller::Cli).with_consent(crate::Consent::Granted),
+        );
+        assert!(closed.is_err(), "a closed parent browser must not silently become a new signed-out browser");
     }
 
     #[test]

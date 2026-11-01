@@ -558,21 +558,24 @@ impl Worker {
     /// How the builder's agent runs. Reads the session once: a lock taken twice in one statement
     /// is held by the first until the statement ends, and the second then waits forever.
     fn agent_spec(&self, ws: &Workspace, entry: &crate::BackendEntry, opts: &RunOptions) -> CliSpec {
-        let (deep, config_dir) = {
+        let (deep, config_dir, browser_session) = {
             let session = self.engine.session();
-            (!session.clean_room(), session.config_dir())
+            (
+                !session.clean_room(),
+                session.config_dir(),
+                session.ext.get::<craft_anything_engine::tools::website_tools::SiteBrowser>().map(|b| b.handoff_path()),
+            )
         };
+        let mut preamble = "You work inside Craft Anything for a person who doesn't code. The message below is your task.\n\n".to_string();
+        if deep && browser_session.is_some() && entry.config.ssh_host.is_none() {
+            preamble.push_str("To inspect the original website, use the Craft Anything MCP browser tools attached to its signed-in capture browser. Start with web_page_show without cdp_endpoint. Other browser tools have separate sessions; their access or approval errors do not mean the original website logged out. If the Craft tools cannot connect, report their actual error and ask for help with core_person_ask.\n\n");
+        }
         CliSpec {
-            builder: Some(Builder { investigation: Some(ws.investigation_dir()), inbox: ws.inbox_dir() }),
+            builder: Some(Builder { investigation: Some(ws.investigation_dir()), inbox: ws.inbox_dir(), browser_session }),
             deep,
             logs: Some(crate::failure_log::dir_in(&config_dir)),
             resume: ws.manifest.agent_session.clone(),
-            preamble: Some(
-                "You work inside Craft Anything for a person who doesn't code. The message below is your task.
-
-"
-                .into(),
-            ),
+            preamble: Some(preamble),
             adapters: opts.adapters.clone(),
             ..CliSpec::new(entry.config.clone(), entry.options.clone(), opts.beginner, Some(ws.root.clone()))
         }

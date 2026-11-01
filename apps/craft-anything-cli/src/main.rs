@@ -61,6 +61,9 @@ pub enum Command {
         /// `core_action_approve`); the Craft Anything app answers them.
         #[arg(long)]
         inbox: Option<PathBuf>,
+        /// Join the running app's private capture browser (local Deep builds only).
+        #[arg(long)]
+        browser_session: Option<PathBuf>,
     },
     /// Connect Craft Anything to your coding-agent apps.
     Setup(setup_cmd::SetupArgs),
@@ -243,7 +246,7 @@ fn run(cli: Cli) -> u8 {
             }
             0
         }
-        Command::Mcp { all_tools, inbox } => {
+        Command::Mcp { all_tools, inbox, browser_session } => {
             let engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
                 Ok(e) => e,
                 Err(e) => {
@@ -251,6 +254,12 @@ fn run(cli: Cli) -> u8 {
                     return 1;
                 }
             };
+            if let Some(path) = browser_session
+                && let Err(e) = craft_anything_engine::tools::website_tools::SiteBrowser::attach(&mut engine.session(), path)
+            {
+                eprintln!("craft-anything mcp: {}", e.message);
+                return 1;
+            }
             if let Some(dir) = inbox {
                 engine.session().ext.insert(Arc::new(craft_anything_engine::inbox::InboxDir(dir.clone())));
                 // A builder can generate game assets with the person's keys (one per asset

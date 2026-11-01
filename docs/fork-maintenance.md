@@ -90,6 +90,22 @@ login card through `project_inbox_answer`. Sign-in cannot run unattended. Browse
 private to a build, expire when it ends, and must be signed in again if Study is retried. Closing
 the browser before continuing stops capture rather than starting a signed-out replacement.
 
+Local CLI builders in Deep mode join that same signed-in browser through their Craft Anything
+MCP tools. The app passes a private temporary connection-file path to `mcp --browser-session`;
+the connection itself never enters command-line arguments, project files or evidence. The file
+is deleted when the owning browser session ends. MCP checks the live browser's identity and fails
+if the connection expired instead of opening a fresh signed-out browser. This handoff is not
+available to remote builders or Clean room runs. Other agents' browser plugins have separate
+sessions and approval rules; their approval failures are not evidence that this browser logged out.
+
+The cross-process browser check starts the built CLI as an MCP server, navigates a page that
+requires the capture browser's session storage, captures its authenticated content, and checks
+that exiting MCP leaves the app's browser alive:
+
+```sh
+cargo test --locked -p craft-anything-cli --test browser_session -- --ignored --nocapture
+```
+
 ## Refresh a partially built project
 
 Open the website project and choose **Recapture original** beside **Open folder**. If it is

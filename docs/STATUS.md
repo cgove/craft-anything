@@ -11,9 +11,13 @@ Existing website projects also offer **Recapture original**, which refreshes the
 continues the existing app and builder history. A failed or cancelled capture keeps the old reference.
 Each rebuild has its own engine, browser and inbox. Deep-mode projects can export permitted
 original images from the authenticated browser cache. Tool forms show boolean defaults correctly.
+Local Deep-mode CLI builders share the capture browser through a private temporary handoff;
+separate browser plugins still have their own sessions and approval rules. Expired handoffs fail
+instead of silently starting a signed-out browser. Remote builders cannot join the local browser.
 See [fork-maintenance.md](fork-maintenance.md) for usage, limits, verification and upstream updates.
 Verified with the UI smoke harness and a real headless Chromium against a loopback cookie-auth
-fixture: protected content is captured and exported PNG bytes match the original. Real-site MFA
+fixture: protected content is captured and exported PNG bytes match the original. A separate built
+CLI/MCP process also captures a page requiring the app browser's session storage. Real-site MFA
 and the headed login flow on Windows are not verified. Two existing engine tests fail on macOS
 here and on clean upstream `3e016c9`: `auto_mode_keeps_going_but_never_does_the_dangerous_things`
 and `real_binary_end_to_end_if_present`.

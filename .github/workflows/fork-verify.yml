@@ -64,4 +64,5 @@ jobs:
         run: |
           rustup update stable --no-self-update
           cargo +stable test --locked -p craft-anything-engine authenticated_images_are_exported_through_the_private_browser -- --ignored --nocapture
+          cargo +stable test --locked -p craft-anything-cli --test browser_session -- --ignored --nocapture
           cargo +stable test --locked -p craft-anything-ai existing_website_recapture_replaces_only_the_reference -- --ignored --nocapture

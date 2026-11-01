@@ -401,3 +401,10 @@ naming a tool.
 branch; `git stash` keeps only tracked files, so a new file stayed in the tree and `git add -A`
 put it into the other PR. Use `git stash -u` (or commit the work in progress on its own branch),
 and read `git status` before `git add -A`.
+
+**A browser session that stopped at a process boundary.** Study kept the signed-in browser in its
+engine session, but the CLI builder started a separate MCP engine without that session. Its web
+tools launched a fresh browser although the prompt said the original was open. Pass the run's
+private connection file to local Deep-mode MCP builders, check browser identity before joining,
+and test the built CLI in a separate process. A different browser plugin's approval rejection
+does not establish that the website session expired.
