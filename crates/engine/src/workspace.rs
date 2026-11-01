@@ -375,6 +375,12 @@ pub struct Manifest {
     /// it on; it also needs a key for an asset provider).
     #[serde(default)]
     pub generate_assets: bool,
+    /// Open a visible private browser and wait for the person to sign in before Study.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub website_sign_in: bool,
+    /// The person has permission to reuse the original website's images (Deep mode only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub website_export_images: bool,
     /// The app is the project folder itself: the person's own files, which the builder edits in
     /// place, instead of app/.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -416,6 +422,8 @@ impl Manifest {
             last_reply: String::new(),
             asset_budget_usd: ASSET_BUDGET_USD,
             generate_assets: false,
+            website_sign_in: false,
+            website_export_images: false,
             app_in_root: false,
             start_files: Vec::new(),
             builder: None,
@@ -426,12 +434,24 @@ impl Manifest {
 
     /// Take the fields the person owns from `other` (what's on disk).
     fn take_person_fields(&mut self, other: &Manifest) {
+        self.website_sign_in = other.website_sign_in;
+        self.website_export_images = other.website_export_images;
         self.asset_budget_usd = other.asset_budget_usd;
         self.generate_assets = other.generate_assets;
         self.allowed_actions = other.allowed_actions.clone();
         self.builder.clone_from(&other.builder);
         self.questions = other.questions;
         self.name.clone_from(&other.name);
+    }
+
+    pub fn validate_website_options(&self, deep: bool) -> Result<(), ToolError> {
+        if (self.website_sign_in || self.website_export_images) && !matches!(self.target, TargetRef::Website { .. }) {
+            return Err(ToolError::invalid("Website sign-in and image export require a website target."));
+        }
+        if self.website_export_images && !deep {
+            return Err(ToolError::invalid("Original image export requires Deep mode and permission to reuse the images."));
+        }
+        Ok(())
     }
 }
 
@@ -627,6 +647,8 @@ impl Workspace {
         let (budget, generate, builder, allowed, questions) =
             (m.asset_budget_usd, m.generate_assets, m.builder.clone(), m.allowed_actions.clone(), m.questions);
         copy.set_person(|c| {
+            c.website_sign_in = m.website_sign_in;
+            c.website_export_images = m.website_export_images;
             c.asset_budget_usd = budget;
             c.generate_assets = generate;
             c.builder = builder;
@@ -1014,6 +1036,31 @@ pub fn default_projects_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn website_preferences_survive_old_writers_and_project_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/".into() }).unwrap();
+        assert!(!ws.manifest.website_sign_in && !ws.manifest.website_export_images);
+        let old = Workspace::open(&ws.root).unwrap();
+        ws.set_person(|m| {
+            m.website_sign_in = true;
+            m.website_export_images = true;
+        })
+        .unwrap();
+        old.save().unwrap();
+        let ws = Workspace::open(&ws.root).unwrap();
+        assert!(ws.manifest.website_sign_in && ws.manifest.website_export_images);
+        assert!(ws.manifest.validate_website_options(false).is_err());
+        ws.manifest.validate_website_options(true).unwrap();
+        let copy = ws.duplicate("Other website").unwrap();
+        assert!(copy.manifest.website_sign_in && copy.manifest.website_export_images);
+        let mut old_json = serde_json::to_value(&ws.manifest).unwrap();
+        old_json.as_object_mut().unwrap().remove("website_sign_in");
+        old_json.as_object_mut().unwrap().remove("website_export_images");
+        let legacy = read_manifest(&serde_json::to_vec(&old_json).unwrap()).unwrap();
+        assert!(!legacy.website_sign_in && !legacy.website_export_images);
+    }
 
     #[test]
     fn a_projects_usage_adds_up_across_runs_and_a_newer_file_is_left_alone() {

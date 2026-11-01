@@ -38,7 +38,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec(
             "web_site_capture",
             "Capture a website for rebuilding",
-            "Record the open website into a new folder: full-page PNG screenshots at each requested width, the rendered HTML, design tokens (fonts, sizes, weights, text and background colours as hex, radii, shadows, spacing, content widths, CSS custom properties), the widths its CSS switches layout at, the layout at each width (page width, heading and text sizes, each section's padding, gap, content column and items per row), a layout outline of visible landmarks, headings, controls and images with positions, asset lists (images, stylesheets, scripts, font files, the requests it made), links and form outlines (never values). Writes capture.json and a README.md summary.",
+            "Record the open website into a new folder: full-page PNG screenshots at each requested width, the rendered HTML, design tokens (fonts, sizes, weights, text and background colours as hex, radii, shadows, spacing, content widths, CSS custom properties), the widths its CSS switches layout at, the layout at each width (page width, heading and text sizes, each section's padding, gap, content column and items per row), a layout outline of visible landmarks, headings, controls and images with positions, asset lists (images, stylesheets, scripts, font files, the requests it made), links and form outlines (never values). Writes capture.json and a README.md summary. With export_images in Deep mode, also save permitted original image files from this browser's cache (100 images, 10 MiB each, 50 MiB total); capture.json lists saved and skipped images. Credentials stay in the browser.",
             "Save pictures and a blueprint of a web page so it can be rebuilt.",
             Toolset::Browser,
             Effects::EVIDENCE.union(Effects::WRITES_FILESYSTEM).union(Effects::ACCESSES_NETWORK),
@@ -110,6 +110,9 @@ pub struct OpenParams {
     /// Run the browser without a window (default true).
     #[serde(default = "yes")]
     pub headless: bool,
+    /// Require the existing browser to still be open, rather than starting a signed-out replacement.
+    #[serde(default)]
+    pub require_existing: bool,
     #[serde(default = "d_timeout")]
     pub timeout_secs: u64,
 }
@@ -155,6 +158,10 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     let site = match live_site(ctx, &dl) {
         Some(s) => s,
         None => {
+            if p.require_existing {
+                return Err(ToolError::new(ErrorCode::NotFound, "The private browser was closed; sign in again before capture.")
+                    .with_remediation("Try again and leave the private browser open after signing in."));
+            }
             ctx.report(None, "Starting a private browser…");
             let opts = LaunchOptions { allow_launch: true, headless: p.headless, no_sandbox: false, startup_secs: 30 };
             let b = Browser::launch(ctx, &opts, &dl)?;
@@ -207,7 +214,10 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
         .summary(summary)
         .confidence(Confidence::Observed)
         .authority(Authority::OurRun)
-        .limitation(Limitation::new("private_profile", "A fresh private browser: pages behind a login show their signed-out state."))
+        .limitation(Limitation::new(
+            "private_profile",
+            "A private browser profile: existing browser logins are not imported; manual logins last only for this session.",
+        ))
         .coverage(Coverage::complete(1))
         .location(Location::new("url", shown))
         .build()?;
@@ -552,6 +562,10 @@ pub struct CaptureParams {
     /// so comparisons can leave them out (default false).
     #[serde(default)]
     pub noise_pass: bool,
+    /// Save loaded original image files through this browser session. Deep mode only; setting
+    /// this confirms you own the images or have permission to reuse them. Default false.
+    #[serde(default)]
+    pub export_images: bool,
     #[serde(default = "d_timeout")]
     pub timeout_secs: u64,
 }
@@ -734,6 +748,9 @@ fn web_site_capture(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
     let mut p = p;
     // Clean room keeps what a visitor sees: never the page's own code.
     let visitor = ctx.session.clean_room();
+    if p.export_images && visitor {
+        return Err(ToolError::invalid("Original image export requires Deep mode and permission to reuse the images."));
+    }
     p.include_html &= !visitor;
     let dl = deadline(ctx, p.timeout_secs.max(30))?;
     let site =
@@ -780,6 +797,7 @@ fn web_site_capture(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
             "title": blueprint.get("title"),
             "screenshots": shots,
             "html_bytes": html_bytes,
+            "exported_images": blueprint.get("exported_images"),
             "counts": {"outline": n("outline"), "headings": n("headings"), "links": n("links"), "forms": n("forms"), "images": images},
             "design": blueprint.get("design"),
             "files": ["README.md", "capture.json"],
@@ -857,6 +875,9 @@ fn capture_into(ctx: &Ctx<'_>, client: &mut CdpClient, out: &Path, p: &CapturePa
     }
     if let Value::Object(b) = &mut blueprint {
         b.insert("layouts".into(), Value::Array(layouts));
+        if p.export_images {
+            b.insert("exported_images".into(), export_images(client, out, dl)?);
+        }
     }
     let mut html_bytes = 0;
     if p.include_html {
@@ -867,6 +888,86 @@ fn capture_into(ctx: &Ctx<'_>, client: &mut CdpClient, out: &Path, p: &CapturePa
         write_new_file(out, &["page.html".into()], kept.as_bytes()).map_err(ToolError::invalid)?;
     }
     Ok((blueprint, shots, html_bytes))
+}
+
+const MAX_EXPORT_IMAGES: usize = 100;
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_IMAGES_BYTES: usize = 50 * 1024 * 1024;
+
+/// Read only images already loaded by this page, through its browser cache. No credentials are
+/// read or replayed by an HTTP client, and filenames never come from the remote site.
+fn export_images(client: &mut CdpClient, out: &Path, dl: &Deadline) -> Result<Value, ToolError> {
+    let tree = client.call("Page.getResourceTree", json!({}), None, dl)?;
+    let frame = tree.get("frameTree").unwrap_or(&Value::Null);
+    let frame_id = frame.pointer("/frame/id").and_then(Value::as_str).unwrap_or_default();
+    let resources = frame.get("resources").and_then(Value::as_array);
+    let mut saved = Vec::new();
+    let mut skipped = Vec::new();
+    let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = 0usize;
+    for r in resources.into_iter().flatten().filter(|r| r.get("type").and_then(Value::as_str) == Some("Image")) {
+        let Some(url) = r.get("url").and_then(Value::as_str) else { continue };
+        if !seen.insert(url) {
+            continue;
+        }
+        candidates += 1;
+        if candidates > MAX_EXPORT_IMAGES {
+            continue;
+        }
+        let source = if url.starts_with("http://") || url.starts_with("https://") { shown_url(url) } else { "inline image".into() };
+        let mime = r.get("mimeType").and_then(Value::as_str).unwrap_or_default();
+        let ext = match mime.split(';').next().unwrap_or_default().trim() {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/avif" => "avif",
+            "image/svg+xml" => "svg",
+            "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
+            _ => {
+                skipped.push(json!({"source": source, "reason": "unsupported image type"}));
+                continue;
+            }
+        };
+        if total >= MAX_IMAGES_BYTES || r.get("contentSize").and_then(Value::as_u64).is_some_and(|n| n > MAX_IMAGE_BYTES as u64) {
+            skipped.push(json!({"source": source, "reason": "image export size limit"}));
+            continue;
+        }
+        let body = client.call("Page.getResourceContent", json!({"frameId": frame_id, "url": url}), None, dl);
+        let bytes = body.and_then(|body| image_body(&body));
+        let bytes = match bytes {
+            Ok(bytes) if !bytes.is_empty() && total.saturating_add(bytes.len()) <= MAX_IMAGES_BYTES => bytes,
+            _ => {
+                skipped.push(json!({"source": source, "reason": "image unavailable or exceeds export size limit"}));
+                continue;
+            }
+        };
+        if ext != "svg" && image::guess_format(&bytes).is_err() {
+            skipped.push(json!({"source": source, "reason": "not a recognized image file"}));
+            continue;
+        }
+        let hash = sha256_hex(&bytes);
+        let file = format!("image-{}.{ext}", saved.len() + 1);
+        write_new_file(out, &["images".into(), file.clone()], &bytes).map_err(ToolError::invalid)?;
+        total += bytes.len();
+        saved.push(json!({"source": source, "file": format!("images/{file}"), "mime_type": mime, "bytes": bytes.len(), "sha256": hash}));
+    }
+    Ok(json!({"files": saved, "skipped": skipped, "over_count_limit": candidates.saturating_sub(MAX_EXPORT_IMAGES), "total_bytes": total,
+        "limitation": "Only images already loaded in the main page and available in its browser cache are exported; lazy images, iframe images and unsupported formats may be absent."}))
+}
+
+fn image_body(body: &Value) -> Result<Vec<u8>, ToolError> {
+    let content = body.get("content").and_then(Value::as_str).ok_or_else(|| ToolError::invalid("No image body in browser cache."))?;
+    let encoded = body.get("base64Encoded").and_then(Value::as_bool).unwrap_or(false);
+    if content.len() > if encoded { MAX_IMAGE_BYTES.div_ceil(3) * 4 } else { MAX_IMAGE_BYTES } {
+        return Err(ToolError::invalid("Image exceeds export size limit."));
+    }
+    let bytes = if encoded { web_common::b64_decode(content)? } else { content.as_bytes().to_vec() };
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(ToolError::invalid("Image exceeds export size limit."));
+    }
+    Ok(bytes)
 }
 
 fn truncate_utf8(s: &str, max: usize) -> &str {
@@ -911,6 +1012,10 @@ fn readme(b: &Value, shots: &[Value], html_bytes: usize, visitor: bool) -> Strin
             .unwrap_or_default()
     };
     let mut md = format!("# Capture of {}\n\n", shown_url(&s("/url")));
+    if let Some(exported) = b.get("exported_images") {
+        let count = |key: &str| exported.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+        md.push_str(&format!("Original image export: {} files saved under `images/`, {} skipped, {} beyond the count limit. See `exported_images` in `capture.json` for files, hashes and reasons. Only images already loaded in the main page and available in its browser cache can be saved.\n\n", count("files"), count("skipped"), exported.get("over_count_limit").and_then(Value::as_u64).unwrap_or(0)));
+    }
     md.push_str(&format!("- Title: {}\n", s("/title")));
     if !s("/meta/description").is_empty() {
         md.push_str(&format!("- Description: {}\n", s("/meta/description")));
@@ -1078,6 +1183,104 @@ fn web_site_close(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Explicit local-browser integration check; never runs as part of the normal test suite.
+    #[test]
+    #[ignore = "requires installed Chromium; starts only a private headless browser and loopback fixture"]
+    fn authenticated_images_are_exported_through_the_private_browser() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let fixture = web_common::encode_png(&web_common::Image { width: 2, height: 2, rgba: [30, 100, 200, 255].repeat(4) }).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        struct FixtureServer(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+        impl Drop for FixtureServer {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+                if let Some(handle) = self.1.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+        let stopping = stop.clone();
+        let png = fixture.clone();
+        let server = std::thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                let mut request = [0u8; 16_384];
+                let Ok(n) = stream.read(&mut request) else { continue };
+                let request = String::from_utf8_lossy(&request[..n]);
+                let path = request.split_whitespace().nth(1).unwrap_or("/");
+                let signed_in = request.lines().any(|line| line.to_ascii_lowercase().starts_with("cookie:") && line.contains("craft-fixture=allowed"));
+                let (mime, extra, body): (&str, &str, Vec<u8>) = if path == "/sign-in" {
+                    ("text/html", "Set-Cookie: craft-fixture=allowed; HttpOnly; SameSite=Lax; Path=/\r\n", b"<h1>Signed in</h1>".to_vec())
+                } else if path.starts_with("/original.png") && signed_in {
+                    ("image/png", "", png.clone())
+                } else if signed_in {
+                    ("text/html", "", b"<!doctype html><h1>Private fixture</h1><img src='/original.png?version=fixture' width='32' height='32'>".to_vec())
+                } else {
+                    ("text/html", "", b"<!doctype html><h1>Sign in required</h1>".to_vec())
+                };
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n", body.len());
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        let _server = FixtureServer(stop, Some(server));
+        let root = tempfile::tempdir().unwrap();
+        let engine = crate::Engine::new(crate::testing::session());
+        let call =
+            |tool: &str, params: Value| engine.call(tool, params, crate::CallOptions::new(crate::Caller::Cli).with_consent(crate::Consent::Granted)).unwrap();
+        call("web_site_open", json!({"url": address, "headless": true, "settle_ms": 100}));
+        call("web_site_capture", json!({"output_directory": root.path().join("before"), "widths": [800], "include_html": false}));
+        let before: Value = serde_json::from_slice(&std::fs::read(root.path().join("before/capture.json")).unwrap()).unwrap();
+        assert!(before["text"].as_str().unwrap().contains("Sign in required"));
+        call("web_site_open", json!({"url": format!("{address}/sign-in"), "require_existing": true, "settle_ms": 100}));
+        call("web_site_open", json!({"url": address, "require_existing": true, "settle_ms": 100}));
+        call("web_site_capture", json!({"output_directory": root.path().join("after"), "widths": [800], "include_html": false, "export_images": true}));
+        let after: Value = serde_json::from_slice(&std::fs::read(root.path().join("after/capture.json")).unwrap()).unwrap();
+        assert!(after["text"].as_str().unwrap().contains("Private fixture"));
+        let files = after.pointer("/exported_images/files").unwrap().as_array().unwrap();
+        assert_eq!(files.len(), 1, "{}", after["exported_images"]);
+        let exported = std::fs::read(root.path().join("after").join(files[0]["file"].as_str().unwrap())).unwrap();
+        assert_eq!(exported, fixture, "original protected image bytes, not a screenshot");
+        assert!(!after["exported_images"].to_string().contains("?version="));
+        assert!(!after.to_string().contains("craft-fixture"));
+        call("web_site_close", json!({}));
+    }
+
+    #[test]
+    fn image_export_bounds_decoding_and_refuses_clean_room_before_writing() {
+        assert_eq!(image_body(&json!({"content": "aGVsbG8=", "base64Encoded": true})).unwrap(), b"hello");
+        assert!(image_body(&json!({"content": "x".repeat(MAX_IMAGE_BYTES + 1)})).is_err());
+        assert!(image_body(&json!({"content": "!", "base64Encoded": true})).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = crate::testing::session();
+        session.settings.deep_mode = false;
+        session.settings.engines.tools.chromium = Some(std::env::current_exe().unwrap());
+        let engine = crate::Engine::new(session);
+        let output = dir.path().join("capture");
+        let error = engine
+            .call("web_site_capture", json!({"output_directory": output, "export_images": true}), crate::CallOptions::new(crate::Caller::Cli))
+            .unwrap_err();
+        assert!(error.message.contains("Deep mode"));
+        assert!(!output.exists());
+        let error = engine
+            .call(
+                "web_site_open",
+                json!({"url": "https://example.test/", "require_existing": true}),
+                crate::CallOptions::new(crate::Caller::Cli).with_consent(crate::Consent::Granted),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("private browser was closed"));
+    }
 
     #[test]
     fn a_click_is_described_by_what_changed() {

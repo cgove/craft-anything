@@ -58,6 +58,28 @@ fn first_run_walks_through_four_screens() {
 }
 
 #[test]
+fn website_login_and_permitted_image_export_are_visible_choices() {
+    let mut h = harness_sized(egui::vec2(1280.0, 1120.0), || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.state.make.url = "https://example.test/private".into();
+        app.state.make.editing_url = true;
+        app.state.make.request = "Recreate this website".into();
+        app
+    });
+    h.run_steps(3);
+    h.get_by_label("Sign in before capture").click();
+    h.run_steps(3);
+    assert!(h.state().state.make.website_sign_in);
+    assert!(h.query_by_label("Save original images (I own them or have permission to reuse them)").is_none());
+    h.get_by_label("Deep").click();
+    h.run_steps(3);
+    h.get_by_label("Save original images (I own them or have permission to reuse them)").click();
+    h.run_steps(3);
+    assert!(h.state().state.make.website_export_images);
+    h.get_by_label("Start");
+}
+
+#[test]
 fn simple_title_bar_keeps_only_the_essentials() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);

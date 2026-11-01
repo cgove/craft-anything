@@ -117,6 +117,8 @@ impl std::fmt::Debug for Wake {
 /// Options for one run.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
+    /// A configuration snapshot from a caller holding the parent session, such as a tool.
+    pub session_config: Option<craft_anything_engine::session::SessionConfig>,
     /// The agent backend by name; `None` picks the Builder role, else the first agent app.
     pub backend: Option<String>,
     /// A follow-up request on an existing build (skips Study).
@@ -145,6 +147,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         RunOptions {
+            session_config: None,
             backend: None,
             message: None,
             shown: None,
@@ -189,6 +192,9 @@ pub struct RebuildRun {
 impl RebuildRun {
     /// Start a run on a worker thread. Fails fast (before any work) when no coding agent is set up.
     pub fn start(hub: &AiHub, ws: Workspace, opts: RunOptions) -> Result<RebuildRun, ToolError> {
+        let config = opts.session_config.clone().unwrap_or_else(|| hub.engine.session().configuration());
+        ws.manifest.validate_website_options(config.deep_for_run.unwrap_or(config.settings.deep_mode))?;
+        let hub = hub.isolated(config);
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
         // An API backend builds with our own agent loop and the Build tools; its conversation is

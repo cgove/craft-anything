@@ -149,6 +149,12 @@ pub struct StartParams {
     /// project_assets_allow.
     #[serde(default)]
     pub generate_assets: bool,
+    /// For a new website: wait for manual sign-in in a private browser before capture.
+    #[serde(default)]
+    pub website_sign_in: bool,
+    /// For a new website in Deep mode: save original images you own or have permission to reuse.
+    #[serde(default)]
+    pub website_export_images: bool,
     /// The coding agent to use (a backend name), kept with a new project for its later changes;
     /// default: the one set up for building.
     #[serde(default)]
@@ -303,6 +309,9 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     let settings: &Settings = &ctx.session.settings;
     let (ws, message) = match &p.project {
         Some(dir) => {
+            if p.website_sign_in || p.website_export_images {
+                return Err(ToolError::invalid("Website options are for new projects; existing projects keep their choices."));
+            }
             if p.build_with.is_some() {
                 return Err(ToolError::invalid("build_with is for new projects; a project keeps the stack it was built with."));
             }
@@ -320,7 +329,14 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
                 (None, Some(d)) => project::Place::In(d),
                 (None, None) => project::Place::Projects,
             };
-            let ws = project::new_project(settings, target, &p.request, place, p.build_with.as_deref(), p.generate_assets, p.backend.as_deref())?;
+            let mut ws = project::new_project(settings, target, &p.request, place, p.build_with.as_deref(), p.generate_assets, p.backend.as_deref())?;
+            ws.manifest.website_sign_in = p.website_sign_in;
+            ws.manifest.website_export_images = p.website_export_images;
+            ws.manifest.validate_website_options(!ctx.session.clean_room())?;
+            ws.set_person(|m| {
+                m.website_sign_in = p.website_sign_in;
+                m.website_export_images = p.website_export_images;
+            })?;
             if p.project_folder.is_some() {
                 ctx.session.remember_project(&ws.root)?;
             }
@@ -338,6 +354,7 @@ fn rebuild_start(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     }
     let root = ws.root.clone();
     let opts = RunOptions {
+        session_config: Some(ctx.session.configuration()),
         backend: p.backend,
         shown: message.clone(),
         message,

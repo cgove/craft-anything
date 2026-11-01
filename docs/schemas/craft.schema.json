@@ -116,6 +116,14 @@
       "format": "uint32",
       "default": 0,
       "minimum": 0
+    },
+    "website_export_images": {
+      "description": "The person has permission to reuse the original website's images (Deep mode only).",
+      "type": "boolean"
+    },
+    "website_sign_in": {
+      "description": "Open a visible private browser and wait for the person to sign in before Study.",
+      "type": "boolean"
     }
   },
   "required": [

@@ -55,6 +55,12 @@ pub struct RebuildArgs {
     /// within the project's asset budget). Change it later with `project-assets-allow`.
     #[arg(long)]
     pub generate_assets: bool,
+    /// Sign in manually in a private browser before photographing a new website.
+    #[arg(long, conflicts_with_all = ["unattended", "continue_in"])]
+    pub sign_in: bool,
+    /// Save original website images you own or have permission to reuse (requires --deep).
+    #[arg(long, conflicts_with = "continue_in")]
+    pub export_images: bool,
 }
 
 pub fn rebuild(cli: &Cli, a: &RebuildArgs) -> u8 {
@@ -107,13 +113,24 @@ fn run(cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
                 (None, Some(d)) => Place::In(d),
                 (None, None) => Place::Projects,
             };
-            let ws = rebuild::project::new_project(&settings, &a.target, &a.request, place, a.build_with.as_deref(), a.generate_assets, a.backend.as_deref())?;
+            let mut ws =
+                rebuild::project::new_project(&settings, &a.target, &a.request, place, a.build_with.as_deref(), a.generate_assets, a.backend.as_deref())?;
+            ws.manifest.website_sign_in = a.sign_in;
+            ws.manifest.website_export_images = a.export_images;
+            ws.manifest.validate_website_options(!engine.session().clean_room())?;
+            ws.set_person(|m| {
+                m.website_sign_in = a.sign_in;
+                m.website_export_images = a.export_images;
+            })?;
             if folder.is_some() {
                 engine.session().remember_project(&ws.root)?;
             }
             (ws, None)
         }
     };
+    if a.unattended && ws.manifest.website_sign_in {
+        return Err(ToolError::invalid("A website sign-in needs a person; leave out --unattended."));
+    }
     println!("Project: {}", ws.root.display());
     // A follow-up shows in the project's feed as the person typed it.
     let shown = message.clone();
@@ -256,5 +273,20 @@ fn prompt_answer(r: &Request) -> Answer {
             let line = read_line().to_lowercase();
             Answer { allow: Some(line.starts_with('y') || line.starts_with('a')), always: line.starts_with('a'), ..Default::default() }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn login_cannot_be_auto_answered_and_image_export_is_a_separate_choice() {
+        assert!(Cli::try_parse_from(["craft-anything-cli", "rebuild", "https://example.test/", "Recreate it", "--sign-in", "--unattended"]).is_err());
+        let parsed =
+            Cli::try_parse_from(["craft-anything-cli", "--deep", "rebuild", "https://example.test/", "Recreate it", "--sign-in", "--export-images"]).unwrap();
+        let crate::Command::Rebuild(args) = parsed.command else { panic!("expected rebuild") };
+        assert!(args.sign_in && args.export_images);
     }
 }

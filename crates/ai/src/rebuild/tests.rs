@@ -1,6 +1,51 @@
 use super::check::build_check;
 use super::*;
 
+#[test]
+fn website_sign_in_requires_explicit_continue_even_when_questions_are_automatic() {
+    use craft_anything_engine::inbox::Answer;
+    for choice in ["I'm signed in, continue", "Cancel", "unexpected"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/".into() }).unwrap();
+        let mut worker = check_worker(&ws, true);
+        worker.engine.session().settings.questions = Some(craft_anything_engine::workspace::Questions::Decide);
+        let inbox = worker.inbox.clone();
+        let root = ws.root.clone();
+        let (done, result) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            done.send(worker.wait_for_website_sign_in(&mut ws, Duration::from_secs(5))).unwrap();
+        });
+        let start = Instant::now();
+        let request = loop {
+            if let Some(request) = inbox.pending().into_iter().next() {
+                break request;
+            }
+            assert!(start.elapsed() < Duration::from_secs(3));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!request.allow_text && request.choices[0] == "Cancel");
+        assert!(result.try_recv().is_err(), "no automatic continuation");
+        assert!(!root.join("capture").exists());
+        inbox.answer(&request.id, &Answer { choice: Some(choice.into()), ..Default::default() }).unwrap();
+        let outcome = result.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(outcome.is_ok(), choice == "I'm signed in, continue");
+        handle.join().unwrap();
+        assert!(inbox.pending().is_empty());
+    }
+}
+
+#[test]
+fn website_sign_in_timeout_and_stop_never_continue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/".into() }).unwrap();
+    let mut worker = check_worker(&ws, true);
+    assert_eq!(worker.wait_for_website_sign_in(&mut ws, Duration::ZERO).unwrap_err().code, ErrorCode::TimedOut);
+    assert!(worker.inbox.pending().is_empty());
+    worker.stop.cancel();
+    assert_eq!(worker.wait_for_website_sign_in(&mut ws, Duration::from_secs(1)).unwrap_err().code, ErrorCode::Cancelled);
+    assert!(!ws.capture_dir().exists());
+}
+
 // Helpers that take a built-in kind's id, so each test reads as one line.
 fn kind(id: &str) -> Arc<dyn TargetKind> {
     KindRegistry::built_in().get(id).unwrap()

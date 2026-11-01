@@ -8,7 +8,11 @@ impl Worker {
         match ws.manifest.target.clone() {
             TargetRef::Website { url } => {
                 self.step(ws, Step::Study, Status::Inspecting, &format!("Opening {url} in a private browser…"))?;
-                self.call("web_site_open", json!({"url": url}))?;
+                self.call("web_site_open", json!({"url": url, "headless": !ws.manifest.website_sign_in}))?;
+                if ws.manifest.website_sign_in {
+                    self.wait_for_website_sign_in(ws, Duration::from_secs(10 * 60))?;
+                    self.call("web_site_open", json!({"url": url, "require_existing": true}))?;
+                }
                 self.step(ws, Step::Study, Status::Inspecting, "Photographing the page and reading its layout…")?;
                 let capture = ws.capture_dir();
                 if capture.exists() {
@@ -16,7 +20,7 @@ impl Worker {
                 }
                 // The widths the check compares at, so every picture has its pair.
                 let widths = self.engine.session().settings.build.widths();
-                self.call("web_site_capture", json!({"output_directory": capture.display().to_string(), "widths": widths, "noise_pass": true}))?;
+                self.call("web_site_capture", json!({"output_directory": capture.display().to_string(), "widths": widths, "noise_pass": true, "export_images": ws.manifest.website_export_images}))?;
                 // Menus, pop-ups and tabs, one at a time, on a computer and on a phone (where a menu
                 // button often replaces the navigation); a page without them (or a failure) is fine.
                 self.step(ws, Step::Study, Status::Inspecting, "Opening its menus, pop-ups and tabs…")?;
@@ -117,6 +121,29 @@ impl Worker {
         Ok(())
     }
 
+    pub(super) fn wait_for_website_sign_in(&mut self, ws: &mut Workspace, timeout: Duration) -> Result<(), ToolError> {
+        use craft_anything_engine::inbox::RequestKind;
+        const CONTINUE: &str = "I'm signed in, continue";
+        self.step(ws, Step::Study, Status::NeedsYou, "Sign in in the private browser, then continue here.")?;
+        let id = self.inbox.post(
+            RequestKind::Question,
+            "Sign in before capture",
+            "Sign in in the private browser, including any verification steps. Leave it open. Your password and login session stay in that browser. Continue only when the page you want is accessible.",
+            vec!["Cancel".into(), CONTINUE.into()],
+            false,
+            None,
+        )?;
+        self.relay_inbox();
+        let answer = self.inbox.wait(&id, timeout, &|| self.stop.is_cancelled());
+        self.stop.check()?;
+        match answer {
+            Some(a) if a.choice.as_deref() == Some(CONTINUE) => Ok(()),
+            Some(_) => Err(ToolError::new(ErrorCode::Cancelled, "Website sign-in was cancelled; nothing was captured.")),
+            None => Err(ToolError::new(ErrorCode::TimedOut, "Website sign-in timed out; nothing was captured.")
+                .with_remediation("Try again and sign in in the private browser within ten minutes.")),
+        }
+    }
+
     /// Deep mode: how the site works, not only how it looks, into capture/how-it-works.md: what its
     /// JavaScript is made of (with readable sources where its maps allow) and ten seconds of what the
     /// start page does (requests, console, WebSocket messages). A part that fails is said, not fatal.
@@ -212,10 +239,10 @@ impl Worker {
         for (i, r) in picked.iter().enumerate() {
             self.step(ws, Step::Study, Status::Inspecting, &format!("Photographing more pages ({} of {}): {}…", i + 1, picked.len(), r.path))?;
             let dir = capture.join("routes").join(&r.slug);
-            let got = self.call("web_site_open", json!({"url": r.url})).and_then(|_| {
+            let got = self.call("web_site_open", json!({"url": r.url, "require_existing": ws.manifest.website_sign_in})).and_then(|_| {
                 self.call(
                     "web_site_capture",
-                    json!({"output_directory": dir.display().to_string(), "include_html": false, "widths": widths, "noise_pass": true}),
+                    json!({"output_directory": dir.display().to_string(), "include_html": false, "widths": widths, "noise_pass": true, "export_images": ws.manifest.website_export_images}),
                 )
             });
             match got {

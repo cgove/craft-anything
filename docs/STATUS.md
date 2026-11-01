@@ -6,6 +6,16 @@ secret scan of all history clean).
 
 ## What works, and how it was checked
 
+Fork additions: website projects can wait for manual sign-in in a private browser before Study.
+Each rebuild has its own engine, browser and inbox. Deep-mode projects can export permitted
+original images from the authenticated browser cache. Tool forms show boolean defaults correctly.
+See [fork-maintenance.md](fork-maintenance.md) for usage, limits, verification and upstream updates.
+Verified with the UI smoke harness and a real headless Chromium against a loopback cookie-auth
+fixture: protected content is captured and exported PNG bytes match the original. Real-site MFA
+and the headed login flow on Windows are not verified. Two existing engine tests fail on macOS
+here and on clean upstream `3e016c9`: `auto_mode_keeps_going_but_never_does_the_dangerous_things`
+and `real_binary_end_to_end_if_present`.
+
 | Area | State | Verified by |
 |---|---|---|
 | Engine | 271 engine tools (284 with the AI and setup layers') across native, managed, Java, Android, Apple, JS/Electron, web, firmware, packets, databases, game archives and assets; see [tools.md](tools.md) and [tool-status.md](tool-status.md). A saved result can be narrowed without running again (`core_evidence_browse` keeps the rows matching given field values, cut to chosen fields) | A functional audit that ran every tool on real inputs on Windows, plus 600+ unit and integration tests |

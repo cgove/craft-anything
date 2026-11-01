@@ -90,7 +90,23 @@ pub struct Session {
     pub deep_for_run: Option<bool>,
 }
 
+/// Configuration shared by isolated sessions; runtime targets, browsers and inboxes are excluded.
+#[derive(Debug, Clone)]
+pub struct SessionConfig {
+    pub settings: Settings,
+    config_dir: Option<std::path::PathBuf>,
+    pub deep_for_run: Option<bool>,
+}
+
 impl Session {
+    pub fn configuration(&self) -> SessionConfig {
+        SessionConfig { settings: self.settings.clone(), config_dir: self.config_dir.clone(), deep_for_run: self.deep_for_run }
+    }
+
+    pub fn from_configuration(config: SessionConfig) -> Self {
+        Session { settings: config.settings, config_dir: config.config_dir, deep_for_run: config.deep_for_run, ..Default::default() }
+    }
+
     pub fn new(settings: Settings) -> Self {
         Session { settings, ..Default::default() }
     }

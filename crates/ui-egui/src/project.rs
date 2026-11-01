@@ -64,6 +64,8 @@ impl CraftApp {
             return;
         }
         let target = resolve_target(&draft);
+        let website = matches!(target, TargetRef::Website { .. });
+        let export_images = website && self.settings.deep_mode && draft.website_export_images;
         // Deep mode reads a program's code with Ghidra: got first when it isn't here (asked once).
         if matches!(target, TargetRef::Local { .. }) && !draft.skip_ghidra && self.ghidra_missing() {
             self.ghidra.start_after = Some(Box::new(draft));
@@ -91,6 +93,8 @@ impl CraftApp {
             ws.set_person(|m| {
                 m.asset_budget_usd = budget;
                 m.generate_assets = generate;
+                m.website_sign_in = website && draft.website_sign_in;
+                m.website_export_images = export_images;
                 // Picked on Make: its later changes are built by it too.
                 m.builder = draft.ai;
             })

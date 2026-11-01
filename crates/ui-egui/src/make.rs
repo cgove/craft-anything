@@ -271,6 +271,16 @@ fn choose_target(app: &mut CraftApp, ui: &mut Ui) {
         if pick == Some(0) {
             r.request_focus();
         }
+        ui.add_space(8.0);
+        widgets::toggle(ui, &mut m.website_sign_in, &tr("Sign in before capture"));
+        if m.website_sign_in {
+            ui.label(RichText::new(tr("A private browser will open. Sign in there, then continue here.")).color(t.text_dim));
+        }
+        if app.settings.deep_mode {
+            widgets::toggle(ui, &mut m.website_export_images, &tr("Save original images (I own them or have permission to reuse them)"));
+        } else {
+            ui.label(RichText::new(tr("Original image export is available in Deep mode with permission to reuse the images.")).color(t.text_dim));
+        }
         // Say what's wrong right under the field, once something has been typed.
         if let Some(problem) = url_problem(&m.url) {
             ui.add_space(4.0);
