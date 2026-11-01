@@ -113,6 +113,35 @@ fn an_existing_website_can_choose_recapture_without_resetting_the_project() {
 }
 
 #[test]
+fn website_project_sidebar_actions_stay_inside_the_window_while_running() {
+    use craft_anything_ai::rebuild::StandIns;
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    for (width, running) in [(1676.0, true), (1676.0, false), (1280.0, true), (1280.0, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(dir.path(), "Website", "Recreate it", TargetRef::Website { url: "https://example.test/private".into() }).unwrap();
+        let runs = StandIns::new();
+        let folder = dir.path().to_path_buf();
+        let mut h = harness_sized(egui::vec2(width, 1152.0), move || {
+            let mut app = stand_in_app(folder, &runs);
+            app.open_workspace(ws);
+            if running {
+                app.continue_build();
+            }
+            app
+        });
+        h.run_steps(4);
+        let screen = h.ctx.content_rect();
+        for name in ["From", "Progress", "Open folder", "Recapture original", "Rename", "Duplicate"] {
+            let rect = h.get_by_label(name).rect();
+            assert!(
+                rect.left() >= screen.right() - 300.0 && rect.right() <= screen.right(),
+                "{name} is clipped: {rect:?}, window {screen:?}, running {running}"
+            );
+        }
+    }
+}
+
+#[test]
 fn simple_title_bar_keeps_only_the_essentials() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);

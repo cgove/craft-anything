@@ -752,15 +752,14 @@ fn side(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
             open_folder(app, ws);
         }
         if matches!(ws.manifest.target, TargetRef::Website { .. }) {
-            ui.add_enabled_ui(!app.running(), |ui| {
-                if widgets::secondary(ui, Some("refresh-cw"), "Recapture original").clicked() {
-                    app.state.modal = Some(Modal::RecaptureWebsite {
-                        project: ws.root.clone(),
-                        sign_in: true,
-                        export_images: app.settings.deep_mode && ws.manifest.website_export_images,
-                    });
-                }
-            });
+            let recapture = ui.add_enabled(!app.running(), |ui: &mut Ui| widgets::secondary(ui, Some("refresh-cw"), "Recapture original"));
+            if recapture.clicked() {
+                app.state.modal = Some(Modal::RecaptureWebsite {
+                    project: ws.root.clone(),
+                    sign_in: true,
+                    export_images: app.settings.deep_mode && ws.manifest.website_export_images,
+                });
+            }
         }
         if matches!(outcome(app), Some(Outcome::Program))
             && widgets::secondary(ui, Some("pin"), "Pin this build").on_hover_text(tr("Keep this version in the sidebar to open any time.")).clicked()
